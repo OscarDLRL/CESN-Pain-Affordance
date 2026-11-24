@@ -1,0 +1,6 @@
+# Dataset generation / ManiSkill environment
+mani-skill
+gymnasium
+numpy==1.26.4
+h5py
+torch

@@ -1,0 +1,8 @@
+# CESN training, inversion, analysis and reporting
+numpy
+scipy
+h5py
+torch
+matplotlib
+gymnasium
+mani-skill

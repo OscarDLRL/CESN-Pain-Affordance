@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Environments
+.venv/
+venv/
+env/
+.conda/
+
+# VS Code
+.vscode/
+
+# Large datasets
+datasets/
+*.h5
+*.hdf5
+
+# Trained models / checkpoints
+*.pt
+*.pth
+*.ckpt
+
+# Generated outputs
+CESN/outputs/
+outputs/
+
+# Figures / GIFs generated during experiments
+*.gif
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db

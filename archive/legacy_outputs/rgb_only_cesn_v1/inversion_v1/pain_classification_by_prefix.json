@@ -1,0 +1,114 @@
+{
+  "architecture": "rgb_only_cesn_inverse_discrete_pain_class_v1",
+  "decision_rule": "choose class with lower observed-prefix latent RMSE",
+  "labels": {
+    "0": "non-painful",
+    "1": "painful"
+  },
+  "test_trajectories": 22,
+  "observation_fractions": [
+    0.1,
+    0.2,
+    0.3,
+    0.4,
+    0.5,
+    0.6,
+    0.7,
+    0.8,
+    0.9,
+    1.0
+  ],
+  "first_fraction_at_or_above_90_percent_accuracy": 0.1,
+  "results": [
+    {
+      "fraction": 0.1,
+      "accuracy": 0.9090909090909091,
+      "non_painful_accuracy": 0.9090909090909091,
+      "painful_accuracy": 0.9090909090909091,
+      "correct": 20,
+      "total": 22,
+      "mean_absolute_rmse_margin": 0.056811558760025284
+    },
+    {
+      "fraction": 0.2,
+      "accuracy": 1.0,
+      "non_painful_accuracy": 1.0,
+      "painful_accuracy": 1.0,
+      "correct": 22,
+      "total": 22,
+      "mean_absolute_rmse_margin": 0.2604903365400704
+    },
+    {
+      "fraction": 0.3,
+      "accuracy": 1.0,
+      "non_painful_accuracy": 1.0,
+      "painful_accuracy": 1.0,
+      "correct": 22,
+      "total": 22,
+      "mean_absolute_rmse_margin": 0.48409790376370604
+    },
+    {
+      "fraction": 0.4,
+      "accuracy": 1.0,
+      "non_painful_accuracy": 1.0,
+      "painful_accuracy": 1.0,
+      "correct": 22,
+      "total": 22,
+      "mean_absolute_rmse_margin": 0.6096682257272981
+    },
+    {
+      "fraction": 0.5,
+      "accuracy": 1.0,
+      "non_painful_accuracy": 1.0,
+      "painful_accuracy": 1.0,
+      "correct": 22,
+      "total": 22,
+      "mean_absolute_rmse_margin": 0.6427857042713598
+    },
+    {
+      "fraction": 0.6,
+      "accuracy": 1.0,
+      "non_painful_accuracy": 1.0,
+      "painful_accuracy": 1.0,
+      "correct": 22,
+      "total": 22,
+      "mean_absolute_rmse_margin": 0.6487690657377243
+    },
+    {
+      "fraction": 0.7,
+      "accuracy": 1.0,
+      "non_painful_accuracy": 1.0,
+      "painful_accuracy": 1.0,
+      "correct": 22,
+      "total": 22,
+      "mean_absolute_rmse_margin": 0.6615976657379757
+    },
+    {
+      "fraction": 0.8,
+      "accuracy": 1.0,
+      "non_painful_accuracy": 1.0,
+      "painful_accuracy": 1.0,
+      "correct": 22,
+      "total": 22,
+      "mean_absolute_rmse_margin": 0.6676580384373665
+    },
+    {
+      "fraction": 0.9,
+      "accuracy": 1.0,
+      "non_painful_accuracy": 1.0,
+      "painful_accuracy": 1.0,
+      "correct": 22,
+      "total": 22,
+      "mean_absolute_rmse_margin": 0.6757826181975278
+    },
+    {
+      "fraction": 1.0,
+      "accuracy": 1.0,
+      "non_painful_accuracy": 1.0,
+      "painful_accuracy": 1.0,
+      "correct": 22,
+      "total": 22,
+      "mean_absolute_rmse_margin": 0.6840519336136904
+    }
+  ]
+}
