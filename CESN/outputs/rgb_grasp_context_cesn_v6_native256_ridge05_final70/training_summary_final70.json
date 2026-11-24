@@ -1,0 +1,22 @@
+{
+  "architecture": "rgb_grasp_context_cesn_v6_native256_ridge05_final70",
+  "context": "[task_onehot(2), static_pca16, grasp_xy(2), time_index(1)]",
+  "output": "z_dynamic_v6_final70(128)",
+  "time_input": true,
+  "time_index_scale": 100.0,
+  "reservoir_size": 1500,
+  "ridge": 0.5,
+  "final_train_pairs": 70,
+  "test_pairs": 11,
+  "train": {
+    "rmse": 2.8669116497039795,
+    "mae": 1.9625139236450195,
+    "r2": 0.8891308768654584
+  },
+  "test": {
+    "rmse": 3.6531949043273926,
+    "mae": 2.598649740219116,
+    "r2": 0.8153008903115369
+  },
+  "pca16_explained": 0.9999657298804747
+}

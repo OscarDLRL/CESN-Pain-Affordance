@@ -1,0 +1,10 @@
+PAIN AFFORDANCE — INVERSE CONTEXT CONSISTENCY
+================================================
+XY consistency metric: MEAN error
+TASK >= 80% consistently: 60%
+TASK >= 85% consistently: 60%
+TASK >= 90% consistently: None
+Known-TASK mean XY <= 10 mm consistently: 80%
+Joint TASK+XY mean XY <= 10 mm consistently: None%
+Joint TASK+XY mean XY <= 20 mm consistently: 60%
+Combined TASK >= 85% and joint mean XY <= 10 mm consistently: None%

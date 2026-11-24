@@ -1,38 +1,91 @@
+# ============================================================
 # Python
+# ============================================================
 __pycache__/
 *.py[cod]
 *.egg-info/
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
 
-# Environments
+# ============================================================
+# Virtual environments
+# ============================================================
 .venv/
 venv/
 env/
 .conda/
 
-# VS Code
+# ============================================================
+# IDE
+# ============================================================
 .vscode/
+.idea/
 
+# ============================================================
 # Large datasets
-datasets/
+# ============================================================
+/datasets/
 *.h5
 *.hdf5
+*.npy
+*.npz
 
-# Trained models / checkpoints
+# ============================================================
+# Trained models and checkpoints
+# ============================================================
 *.pt
 *.pth
 *.ckpt
+*.safetensors
 
-# Generated outputs
-CESN/outputs/
-outputs/
-
-# Figures / GIFs generated during experiments
-*.gif
-
-# Logs
+# ============================================================
+# Temporary experimental files
+# ============================================================
+*.tmp
+*.temp
+*.bak
 *.log
 
-# OS
+# ============================================================
+# Large generated media
+# ============================================================
+*.gif
+*.mp4
+*.avi
+*.mov
+
+# ============================================================
+# Training visualization and cache directories
+# ============================================================
+**/checkpoints/
+**/tensorboard/
+**/wandb/
+**/cache/
+
+# ============================================================
+# Operating system
+# ============================================================
 .DS_Store
 Thumbs.db
+
+# ============================================================
+# Secrets
+# ============================================================
+.env
+.env.local
+.env.*
+!.env.example
+# Individual trajectory diagnostic figures
+**/flip_cases/
+
+# Superseded pre-Latent200 implementations
+/CESN/core/autoencoder_v6_native256.py
+/CESN/core/extract_latents_v6_native256_final70.py
+/CESN/core/parameters_grasp_context_v6_native256_ridge05_final70.py
+/CESN/core/train_autoencoder_v6_native256_final70.py
+/CESN/core/train_grasp_context_v6_native256_ridge05_final70.py
+/CESN/analysis/method_a_lbfgs_v6_native256_ridge05_final70_gpu.py
+
+# Superseded pre-Latent200 figures
+/CESN/outputs/rgb_grasp_context_cesn_v6_native256_ridge05_final70/**/*.png

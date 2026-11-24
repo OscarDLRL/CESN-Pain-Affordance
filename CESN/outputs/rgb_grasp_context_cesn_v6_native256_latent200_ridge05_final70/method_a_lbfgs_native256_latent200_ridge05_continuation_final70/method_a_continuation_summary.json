@@ -1,0 +1,162 @@
+{
+  "method": "Method A + temporal continuation",
+  "description": "9 geometric restarts plus previous-history optimum as an extra restart for SAFE and PAIN independently.",
+  "summary": [
+    {
+      "history_percent": 5,
+      "known_task_xy_mean_mm": 63.13480202840821,
+      "known_task_xy_std_mm": 47.963051831484044,
+      "known_task_xy_median_mm": 54.28086598459258,
+      "known_task_xy_p90_mm": 138.0509746433658,
+      "joint_task_accuracy": 0.5909090909090909,
+      "joint_xy_mean_mm": 81.9057213769339,
+      "joint_xy_std_mm": 54.704819454138466,
+      "joint_xy_median_mm": 72.08298880787869,
+      "joint_xy_p90_mm": 142.51651857426876
+    },
+    {
+      "history_percent": 10,
+      "known_task_xy_mean_mm": 51.96123042082229,
+      "known_task_xy_std_mm": 46.033610817747224,
+      "known_task_xy_median_mm": 36.06238461092268,
+      "known_task_xy_p90_mm": 132.17286173819605,
+      "joint_task_accuracy": 0.8181818181818182,
+      "joint_xy_mean_mm": 47.14680696439134,
+      "joint_xy_std_mm": 42.83490030096447,
+      "joint_xy_median_mm": 30.568237819017995,
+      "joint_xy_p90_mm": 80.6178187730302
+    },
+    {
+      "history_percent": 15,
+      "known_task_xy_mean_mm": 44.48923741302411,
+      "known_task_xy_std_mm": 34.84124988083223,
+      "known_task_xy_median_mm": 39.92347596335547,
+      "known_task_xy_p90_mm": 84.5238172851334,
+      "joint_task_accuracy": 0.8181818181818182,
+      "joint_xy_mean_mm": 35.23050612592603,
+      "joint_xy_std_mm": 26.872587531507122,
+      "joint_xy_median_mm": 28.973260586846905,
+      "joint_xy_p90_mm": 64.72418407980888
+    },
+    {
+      "history_percent": 20,
+      "known_task_xy_mean_mm": 35.24021187420769,
+      "known_task_xy_std_mm": 26.25569141447532,
+      "known_task_xy_median_mm": 33.12978305013107,
+      "known_task_xy_p90_mm": 73.41980424092692,
+      "joint_task_accuracy": 0.9090909090909091,
+      "joint_xy_mean_mm": 31.64167776356868,
+      "joint_xy_std_mm": 25.016141665223838,
+      "joint_xy_median_mm": 32.24063873211765,
+      "joint_xy_p90_mm": 58.49881614858186
+    },
+    {
+      "history_percent": 25,
+      "known_task_xy_mean_mm": 26.394096916333673,
+      "known_task_xy_std_mm": 20.23542839783855,
+      "known_task_xy_median_mm": 26.070662626067275,
+      "known_task_xy_p90_mm": 44.025543096640426,
+      "joint_task_accuracy": 0.9090909090909091,
+      "joint_xy_mean_mm": 22.73381706612586,
+      "joint_xy_std_mm": 17.676266359571724,
+      "joint_xy_median_mm": 22.947296153530765,
+      "joint_xy_p90_mm": 40.439833039235985
+    },
+    {
+      "history_percent": 30,
+      "known_task_xy_mean_mm": 20.911920187313353,
+      "known_task_xy_std_mm": 16.96456087814926,
+      "known_task_xy_median_mm": 22.377277563958586,
+      "known_task_xy_p90_mm": 32.79338467465876,
+      "joint_task_accuracy": 0.9545454545454546,
+      "joint_xy_mean_mm": 21.0554823059378,
+      "joint_xy_std_mm": 16.864459616724528,
+      "joint_xy_median_mm": 22.377277563958586,
+      "joint_xy_p90_mm": 32.79338467465876
+    },
+    {
+      "history_percent": 40,
+      "known_task_xy_mean_mm": 14.337989402549589,
+      "known_task_xy_std_mm": 9.09653307797903,
+      "known_task_xy_median_mm": 14.746106400049502,
+      "known_task_xy_p90_mm": 24.18730089650919,
+      "joint_task_accuracy": 0.9545454545454546,
+      "joint_xy_mean_mm": 15.14838059249912,
+      "joint_xy_std_mm": 8.704106018100278,
+      "joint_xy_median_mm": 17.435497468104884,
+      "joint_xy_p90_mm": 24.18730089650919
+    },
+    {
+      "history_percent": 50,
+      "known_task_xy_mean_mm": 11.352591407984256,
+      "known_task_xy_std_mm": 8.829095036664771,
+      "known_task_xy_median_mm": 9.863633481974727,
+      "known_task_xy_p90_mm": 20.35716008367029,
+      "joint_task_accuracy": 0.8636363636363636,
+      "joint_xy_mean_mm": 12.677950448349275,
+      "joint_xy_std_mm": 9.115857357068641,
+      "joint_xy_median_mm": 10.79259201892755,
+      "joint_xy_p90_mm": 24.653990891392464
+    },
+    {
+      "history_percent": 60,
+      "known_task_xy_mean_mm": 9.708395514884982,
+      "known_task_xy_std_mm": 7.421018009656064,
+      "known_task_xy_median_mm": 8.020611082210083,
+      "known_task_xy_p90_mm": 21.085434258006888,
+      "joint_task_accuracy": 0.9545454545454546,
+      "joint_xy_mean_mm": 10.254593900543558,
+      "joint_xy_std_mm": 7.464665987105394,
+      "joint_xy_median_mm": 8.264429690256105,
+      "joint_xy_p90_mm": 21.262580111643103
+    },
+    {
+      "history_percent": 70,
+      "known_task_xy_mean_mm": 8.308410959636833,
+      "known_task_xy_std_mm": 5.845737956922989,
+      "known_task_xy_median_mm": 5.792760964604321,
+      "known_task_xy_p90_mm": 17.257116618638413,
+      "joint_task_accuracy": 0.9545454545454546,
+      "joint_xy_mean_mm": 8.62712149159559,
+      "joint_xy_std_mm": 5.840409706568273,
+      "joint_xy_median_mm": 6.926090753574574,
+      "joint_xy_p90_mm": 17.257116618638413
+    },
+    {
+      "history_percent": 80,
+      "known_task_xy_mean_mm": 7.200585518821608,
+      "known_task_xy_std_mm": 5.461144114269465,
+      "known_task_xy_median_mm": 5.008227078987819,
+      "known_task_xy_p90_mm": 15.55656735556467,
+      "joint_task_accuracy": 0.8636363636363636,
+      "joint_xy_mean_mm": 8.799120318505432,
+      "joint_xy_std_mm": 6.671878396806161,
+      "joint_xy_median_mm": 6.198738491810994,
+      "joint_xy_p90_mm": 18.260419605052117
+    },
+    {
+      "history_percent": 90,
+      "known_task_xy_mean_mm": 6.483896509913319,
+      "known_task_xy_std_mm": 5.100034551111561,
+      "known_task_xy_median_mm": 5.15014398880602,
+      "known_task_xy_p90_mm": 12.944857115891455,
+      "joint_task_accuracy": 0.8181818181818182,
+      "joint_xy_mean_mm": 8.109508540910312,
+      "joint_xy_std_mm": 6.297841499260555,
+      "joint_xy_median_mm": 5.833122956162812,
+      "joint_xy_p90_mm": 18.097466523622334
+    },
+    {
+      "history_percent": 100,
+      "known_task_xy_mean_mm": 6.0126264067944675,
+      "known_task_xy_std_mm": 4.832886160905561,
+      "known_task_xy_median_mm": 5.509582138139433,
+      "known_task_xy_p90_mm": 12.091085016721854,
+      "joint_task_accuracy": 0.8636363636363636,
+      "joint_xy_mean_mm": 7.5375957171017465,
+      "joint_xy_std_mm": 6.57691025137482,
+      "joint_xy_median_mm": 5.509582138139433,
+      "joint_xy_p90_mm": 18.691383829412526
+    }
+  ]
+}
