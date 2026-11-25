@@ -1,0 +1,45 @@
+{
+  "grid_mm": 2.0,
+  "batch": 128,
+  "restarts": 9,
+  "seed": 42,
+  "max_iter": 80,
+  "frames": [
+    1,
+    2,
+    3,
+    5,
+    10,
+    12
+  ],
+  "percent": [
+    5.0,
+    10.0,
+    15.0,
+    20.0,
+    25.0,
+    30.0,
+    40.0,
+    50.0,
+    60.0,
+    70.0,
+    80.0,
+    90.0,
+    100.0
+  ],
+  "quick": false,
+  "bounds_m": [
+    [
+      0.020000000000000004,
+      -0.045
+    ],
+    [
+      0.08,
+      0.015
+    ]
+  ],
+  "grid_candidates_per_label": 961,
+  "device": "cuda",
+  "nearest_distance": "dynamic prefix MSE / train variance + static PCA MSE / train variance",
+  "timing": "synchronized online inference, excludes future rollout and shared input preparation"
+}

@@ -1,0 +1,18 @@
+{
+  "architecture": "native256_latent200_spatial_only_ridge05_final70",
+  "task_as_context": false,
+  "context_dim": 19,
+  "reservoir_size": 1500,
+  "ridge": 0.5,
+  "train": {
+    "rmse": 7.381382942199707,
+    "mae": 5.415613174438477,
+    "r2": 0.5348030968498885
+  },
+  "test": {
+    "rmse": 7.197173595428467,
+    "mae": 5.287733554840088,
+    "r2": 0.5296681036938247
+  },
+  "pca16_explained": 0.9997371199684559
+}
