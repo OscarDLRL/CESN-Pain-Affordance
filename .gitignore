@@ -89,3 +89,18 @@ Thumbs.db
 
 # Superseded pre-Latent200 figures
 /CESN/outputs/rgb_grasp_context_cesn_v6_native256_ridge05_final70/**/*.png
+
+# CLEAVER generated artifacts
+*.pt
+*.pth
+*.h5
+*.hdf5
+*.npz
+*.ckpt
+__pycache__/
+*.pyc
+
+# CLEAVER generated outputs and logs
+/CLEAVER_OPTIMIZED/outputs/
+/CLEAVER_OPTIMIZED/logs/
+

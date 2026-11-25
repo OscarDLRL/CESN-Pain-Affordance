@@ -1,0 +1,256 @@
+"""Four matched CESN ablations. No explicit time or future observations in inversion."""
+import argparse, csv, hashlib, json, math, time
+from pathlib import Path
+import h5py
+import numpy as np
+import torch
+from scipy.sparse.linalg import eigs
+
+EXPS = [('E09_PCA16_Control', 16, True), ('E10_NoStatic_Control', 0, True),
+        ('E11_Raw128_GlobalScale', 128, True), ('E12_Raw128_FeatureScale', 129, True)]
+
+def atomic_json(path, obj):
+    tmp=path.with_suffix('.tmp'); tmp.write_text(json.dumps(obj,indent=2,allow_nan=False)+'\n'); tmp.replace(path)
+
+def atomic_pt(path,obj):
+    tmp=path.with_suffix('.tmp'); torch.save(obj,tmp); tmp.replace(path)
+
+def csv_write(path, rows):
+    if not rows:return
+    tmp=path.with_suffix('.tmp')
+    with tmp.open('w',newline='') as f:
+        w=csv.DictWriter(f,fieldnames=list(rows[0])); w.writeheader(); w.writerows(rows)
+    tmp.replace(path)
+
+def digest(path):
+    h=hashlib.sha256()
+    with path.open('rb') as f:
+        for b in iter(lambda:f.read(1024*1024),b''): h.update(b)
+    return h.hexdigest()
+
+def load(lat, split_path):
+    split=json.loads(split_path.read_text()); names=('train','validation','test')
+    assert all(k in split for k in names)
+    sets=[set(map(int,split[k])) for k in names]
+    assert all(not sets[i]&sets[j] for i in range(3) for j in range(i))
+    rows=[]; contacts={}; pairs={}
+    with h5py.File(lat,'r') as f:
+        for key in sorted(f):
+            if not key.startswith('trajectory_'):continue
+            g=f[key]; p=int(g.attrs['pair_id']); lab=int(g.attrs['pain_label'])
+            s=np.asarray(g['z_static'],np.float32); z=np.asarray(g['z_dynamic'],np.float32)
+            xy=np.asarray(g['target_world'],np.float32)[:2]; imp=np.asarray(g['contact_impulses'])
+            assert s.shape==(128,) and z.shape==(223,128) and xy.shape==(2,)
+            assert np.isfinite(s).all() and np.isfinite(z).all() and np.isfinite(xy).all()
+            assert lab in (0,1) and imp.ndim==2 and imp.shape[0]==len(z) and imp.shape[1]>=2 and np.isfinite(imp).all()
+            hit=np.flatnonzero(imp[:,:2].sum(1)>1e-4)
+            assert bool(len(hit))==bool(lab), key
+            if lab:contacts[p]=int(hit[0])
+            assert (p,lab) not in pairs; pairs[p,lab]=xy
+            rows.append((key,p,lab,s,z,xy))
+    assert {r[1] for r in rows}==set.union(*sets)
+    for p in set.union(*sets): assert np.allclose(pairs[p,0],pairs[p,1],atol=1e-7,rtol=0)
+    assert len(rows)==126 and list(map(len,sets))==[48,6,9]
+    result={}
+    for name,ids in zip(names,sets):
+        rr=[r for r in rows if r[1] in ids]
+        result[name]=dict(keys=[r[0] for r in rr],pair=np.array([r[1] for r in rr]),label=np.array([r[2] for r in rr]),static=np.stack([r[3] for r in rr]),z=np.stack([r[4] for r in rr]),xy=np.stack([r[5] for r in rr]),contact=np.array([contacts[r[1]] for r in rr]))
+    return result,split
+
+def normalize(data,device):
+    tr=data['train']; s=tr['static'].astype(np.float64); sm=s.mean(0)
+    _,sv,v=np.linalg.svd(s-sm,full_matrices=False); pc=v[:16]; scores=(s-sm)@pc.T
+    ps=max(float(scores[:,0].std()),1e-6); zm=tr['z'].astype(np.float64).mean((0,1)); zs=max(float((tr['z']-zm).std()),1e-6)
+    raw_std=(s-sm).std(0); raw_floor=max(float(raw_std.max())*.01,1e-6); raw_den=np.maximum(raw_std,raw_floor)
+    standardized=(s-sm)/raw_den; raw_gain=float(np.sqrt(np.mean(np.sum(scores**2,axis=1)))/ps/max(np.sqrt(np.mean(np.sum(standardized**2,axis=1))),1e-6))
+    lo=tr['xy'].min(0); hi=tr['xy'].max(0); assert np.all(hi>lo)
+    def t(x):return torch.as_tensor(x,dtype=torch.float32,device=device)
+    for d in data.values():
+        d['pca16']=t((d['static']-sm)@pc.T/ps); d['pca']=d['pca16']; d['raw_global']=t((d['static']-sm)/ps); d['raw_feature']=t((d['static']-sm)/raw_den*raw_gain); d['yn']=t((d['z']-zm)/zs); d['xyn']=t(2*(d['xy']-lo)/(hi-lo)-1)
+        d['outside_bounds']=np.any((d['xy']<lo-1e-6)|(d['xy']>hi+1e-6),axis=1)
+    info=dict(raw_feature_floor=raw_floor,raw_feature_denominator=raw_den.tolist(),raw_feature_gain=raw_gain,static_mean=sm.tolist(),pca_components=pc.tolist(),pca_scale=ps,pca_whitening=False,pca_component_std=scores.std(0).tolist(),pca_explained_per_component=(sv[:16]**2/(sv**2).sum()).tolist(),pca_explained=float((sv[:16]**2).sum()/(sv**2).sum()),dynamic_mean=zm.tolist(),dynamic_scale=zs,xy_min=lo.tolist(),xy_max=hi.tolist())
+    return info,t(lo),t(hi)
+
+def common_weights(n,seed,radius,device):
+    rng=np.random.default_rng(seed); w=rng.uniform(-1,1,(n,n)).astype(np.float32); w*=rng.random((n,n))<.05
+    if n<=32: rad=float(np.max(np.abs(np.linalg.eigvals(w))))
+    else:
+        try:rad=float(np.max(np.abs(eigs(w,k=1,which='LM',v0=np.ones(n),tol=1e-5,maxiter=5000,return_eigenvectors=False))))
+        except Exception:rad=float(np.max(np.abs(np.linalg.eigvals(w))))
+    if rad<=0:raise RuntimeError('Zero reservoir spectral radius')
+    w*=radius/rad
+    # Shared columns: class2, PCA16, XY2; shared feedback weights for E03/E04.
+    wc=rng.uniform(-.5,.5,(20,n)).astype(np.float32); wf=rng.uniform(-.5,.5,(128,n)).astype(np.float32)/math.sqrt(128)
+    bias=rng.uniform(-.1,.1,n).astype(np.float32)
+    return tuple(torch.tensor(a,device=device) for a in (w,wc,wf,bias))
+
+class CESN:
+    def __init__(self,common,pca,feedback,leak):
+        self.W,self.Wc,self.Wf,self.bias=common; self.pca=pca; self.feedback=feedback; self.leak=leak
+        self.Wc=self.Wc[list(range(2+int(pca)))+[18,19]] if pca<=16 else self.Wc
+        self.n=len(self.bias); self.C=len(self.Wc); self.readout=None
+    def context(self,label,pca,xy):
+        one=torch.nn.functional.one_hot(label.long(),2).float()
+        return torch.cat([one,pca[:,:self.pca],xy],dim=-1)
+    def features(self,c,y):
+        # Teacher forcing: frame t uses only y[t-1]; initial feedback is zero in normalized space.
+        B,T,D=y.shape; r=c.new_zeros(B,self.n); prev=c.new_zeros(B,D); base=c@self.Wc+self.bias; ones=c.new_ones(B,1); f=[]
+        for t in range(T):
+            drive=base+ r@self.W
+            if self.feedback:drive=drive+prev@self.Wf
+            r=(1-self.leak)*r+self.leak*torch.tanh(drive)
+            f.append(torch.cat([ones,c,r],-1))
+            prev=y[:,t]
+        return torch.stack(f,1)
+    def predict(self,c,T,obs=None):
+        # Observed prefix is teacher-forced; continuation is fully autonomous.
+        B=len(c); r=c.new_zeros(B,self.n); prev=c.new_zeros(B,128); base=c@self.Wc+self.bias
+        q=self.readout; constant=q[0]+c@q[1:1+self.C]; qr=q[-self.n:]
+        preds=[]
+        for t in range(T):
+            drive=base+r@self.W
+            if self.feedback:drive=drive+prev@self.Wf
+            r=(1-self.leak)*r+self.leak*torch.tanh(drive)
+            y=constant+r@qr
+            preds.append(y)
+            prev=obs[:,t] if obs is not None and t<obs.shape[1] else y
+        return torch.stack(preds,1)
+    @torch.no_grad()
+    def fit(self,d,ridge):
+        y=d['yn']; c=self.context(torch.tensor(d['label'],device=y.device),d['pca'],d['xyn']); D=1+self.C+self.n
+        G=torch.zeros((D,D),device=y.device,dtype=torch.float64); H=torch.zeros((D,128),device=y.device,dtype=torch.float64)
+        for i in range(0,len(y),8):
+            f=self.features(c[i:i+8],y[i:i+8]).reshape(-1,D).double(); target=y[i:i+8].reshape(-1,128).double(); G+=f.T@f; H+=f.T@target
+        G.diagonal().add_(ridge); G[0,0]-=ridge; self.readout=torch.linalg.solve(G,H).float(); assert torch.isfinite(self.readout).all()
+    @torch.no_grad()
+    def oracle(self,d,scale):
+        y=d['yn']; c=self.context(torch.tensor(d['label'],device=y.device),d['pca'],d['xyn']); out={}
+        for name,obs in [('teacher_forced',y),('autonomous',None)]:
+            p=self.predict(c,y.shape[1],obs); out[name+'_rmse']=float((p.double()-y.double()).square().mean().sqrt()*scale); out[name+'_max_abs_normalized']=float(p.abs().max()); out[name+'_nonfinite_count']=int((~torch.isfinite(p)).sum())
+        return out
+
+def sync(device):
+    if device.type=='cuda':torch.cuda.synchronize(device)
+
+def invert(model,d,ids,n,starts,args,lo,hi,scale):
+    device=lo.device; B=len(ids); R=len(starts); T=d['yn'].shape[1]
+    obs=d['yn'][ids,:n]; static=d['pca'][ids]; full=d['yn'][ids]
+    labs=torch.arange(2,device=device)[None,:,None].expand(B,2,R).reshape(-1)
+    S=static.shape[-1]; ss=static[:,None,None,:].expand(B,2,R,S).reshape(B*2*R,S)
+    yy=obs[:,None,None,:,:].expand(B,2,R,n,128).reshape(-1,n,128)
+    raw=torch.atanh(starts.clamp(-.999,.999))[None,None,:,:].expand(B,2,R,2).reshape(-1,2).clone().requires_grad_(True)
+    opt=torch.optim.LBFGS([raw],lr=1.,max_iter=args.max_iter,max_eval=2*args.max_iter,history_size=20,tolerance_grad=1e-7,tolerance_change=1e-9,line_search_fn='strong_wolfe')
+    best_loss=torch.full((len(raw),),float('inf'),device=device); best_xy=torch.zeros_like(raw); calls=0
+    def losses():
+        xy=raw.tanh(); c=model.context(labs,ss,xy); p=model.predict(c,n,yy if model.feedback else None); return (p-yy).square().mean((1,2)),xy
+    def remember(loss,xy):
+        with torch.no_grad():
+            better=loss.detach()<best_loss; best_loss[better]=loss.detach()[better]; best_xy[better]=xy.detach()[better]
+    def closure():
+        nonlocal calls
+        opt.zero_grad(set_to_none=True); loss,xy=losses(); remember(loss,xy); total=loss.sum(); total.backward(); calls+=1; return total
+    sync(device); tick=time.perf_counter(); opt.step(closure)
+    with torch.no_grad():
+        loss,xy=losses(); remember(loss,xy); calls+=1
+        bl=best_loss.view(B,2,R); bx=best_xy.view(B,2,R,2); v,j=bl.min(-1); x=bx.gather(2,j[:,:,None,None].expand(B,2,1,2)).squeeze(2); pred=v.argmin(1); idx=torch.arange(B,device=device); chosen=x[idx,pred]
+        sync(device); elapsed=(time.perf_counter()-tick)*1000
+        c=model.context(pred,static,chosen); forecast=model.predict(c,T,obs if model.feedback else None)
+        if n<T:future=(forecast[:,n:].double()-full[:,n:].double()).square().mean((1,2)).sqrt()*scale
+        else:future=torch.full((B,),float('nan'),device=device)
+        world=lo+(chosen+1)*.5*(hi-lo); world=world.cpu().numpy(); vv=v.cpu().numpy(); pl=pred.cpu().numpy(); fut=future.cpu().numpy()
+    assert np.isfinite(vv).all() and np.isfinite(world).all()
+    rows=[]
+    for j,i in enumerate(ids):
+        lab=int(d['label'][i]); good,bad=map(float,(vv[j,lab],vv[j,1-lab])); tie=abs(good-bad)<=1e-10*max(1,good,bad)
+        rows.append(dict(trajectory=d['keys'][i],pair_id=int(d['pair'][i]),frames=n,observed_percent=100*n/T,true_label=lab,pred_label=int(pl[j]),correct=int(lab==pl[j]),tie=int(tie),true_x_m=float(d['xy'][i,0]),true_y_m=float(d['xy'][i,1]),pred_x_m=float(world[j,0]),pred_y_m=float(world[j,1]),xy_error_mm=float(np.linalg.norm(world[j]-d['xy'][i])*1000),future_rmse=float(fut[j]) if np.isfinite(fut[j]) else None,future_nonfinite=int(n<T and not np.isfinite(fut[j])),prefix_rmse=float(math.sqrt(min(vv[j]))*scale),margin=(bad-good)/max(good+bad,1e-12),safe_loss=float(vv[j,0]),pain_loss=float(vv[j,1]),first_edge_contact_frame=int(d['contact'][i]),precontact=int(n<=d['contact'][i]),outside_train_xy_bounds=int(d['outside_bounds'][i]),batch_inference_ms=elapsed,amortized_inference_ms=elapsed/B,closure_calls=calls,candidates_per_trajectory=2*R))
+    return rows
+
+def summarize(rows):
+    out=[]
+    def mean(rr,k):
+        a=[float(r[k]) for r in rr if r[k] is not None];return float(np.mean(a)) if a else None
+    for n in sorted({r['frames'] for r in rows}):
+        allr=[r for r in rows if r['frames']==n]
+        for subset,rr in [('all',allr),('precontact',[r for r in allr if r['precontact']])]:
+            if not rr:continue
+            safe=[r for r in rr if r['true_label']==0]; pain=[r for r in rr if r['true_label']==1]
+            out.append(dict(frames=n,observed_percent=rr[0]['observed_percent'],subset=subset,count=len(rr),accuracy_pct=100*mean(rr,'correct'),safe_accuracy_pct=100*mean(safe,'correct') if safe else None,pain_recall_pct=100*mean(pain,'correct') if pain else None,tie_pct=100*mean(rr,'tie'),xy_mean_mm=mean(rr,'xy_error_mm'),xy_median_mm=float(np.median([r['xy_error_mm'] for r in rr])),xy_p90_mm=float(np.quantile([r['xy_error_mm'] for r in rr],.9)),xy_within_10mm_pct=100*float(np.mean([r['xy_error_mm']<=10 for r in rr])),future_rmse=mean(rr,'future_rmse'),future_nonfinite_count=sum(r['future_nonfinite'] for r in rr),prefix_rmse=mean(rr,'prefix_rmse'),mean_margin=mean(rr,'margin'),amortized_inference_ms=mean(rr,'amortized_inference_ms')))
+    return out
+
+def plot(out,rows):
+    import matplotlib; matplotlib.use('Agg'); import matplotlib.pyplot as plt
+    for split in ('validation','test'):
+        for subset in ('all','precontact'):
+            for metric,ylabel in [('accuracy_pct','Intent accuracy (%)'),('pain_recall_pct','PAIN recall (%)'),('xy_mean_mm','Mean XY error (mm)'),('future_rmse','Future latent RMSE'),('amortized_inference_ms','Amortized inversion (ms/trajectory)'),('mean_margin','Signed classification margin')]:
+                fig,ax=plt.subplots(figsize=(7,4))
+                for name,_,_ in EXPS:
+                    rr=[r for r in rows if r['experiment']==name and r['split']==split and r['subset']==subset and r[metric] is not None]
+                    if rr:ax.plot([r['observed_percent'] for r in rr],[r[metric] for r in rr],marker='o',ms=3,label=name.split('_',1)[1])
+                if metric in ('accuracy_pct','pain_recall_pct'):ax.set_ylim(-3,103)
+                if metric=='accuracy_pct':ax.axhline(50,color='gray',ls='--',lw=.8)
+                ax.set_xlabel('Observed trajectory (%)');ax.set_ylabel(ylabel);ax.grid(alpha=.25);ax.legend(fontsize=8);fig.tight_layout();fig.savefig(out/f'{split}_{subset}_{metric}.png',dpi=180);plt.close(fig)
+
+def main():
+    from CLEAVER_OPTIMIZED import config as cfg
+    p=argparse.ArgumentParser();p.add_argument('--reservoir',type=int,default=1500);p.add_argument('--ridge',type=float,default=.5);p.add_argument('--radius',type=float,default=.95);p.add_argument('--leak',type=float,default=.25);p.add_argument('--seed',type=int,default=42);p.add_argument('--restarts',type=int,default=9);p.add_argument('--max-iter',type=int,default=40);p.add_argument('--trajectory-batch',type=int,default=3);p.add_argument('--frames',nargs='+',type=int,default=[1,2,3,5,10,12,23,45,67,112,157,223]);p.add_argument('--device',default='cuda');p.add_argument('--matmul-precision',choices=['highest','high'],default='high');p.add_argument('--run-name',default='raw_static_comparison_lightweight128');args=p.parse_args()
+    assert min(args.reservoir,args.restarts,args.max_iter,args.trajectory_batch)>0 and args.ridge>0 and 0<args.leak<=1 and args.radius>0 and all(1<=x<=223 for x in args.frames)
+    assert Path(args.run_name).name==args.run_name and args.run_name not in ('.','..')
+    device=torch.device(args.device);torch.manual_seed(args.seed);torch.set_float32_matmul_precision(args.matmul_precision)
+    ae=cfg.OUT/'autoencoder_lightweight128';lat=ae/'cleaver_lightweight_latent128.h5';sp=ae/'split.json';out=cfg.OUT/args.run_name;out.mkdir(parents=True,exist_ok=True)
+    data,split=load(lat,sp); info,lo,hi=normalize(data,device); scale=info['dynamic_scale']; signature=dict(args=vars(args),latent_sha256=digest(lat),split=split,script_sha256=digest(Path(__file__)))
+    manifest=out/'manifest.json'
+    if manifest.exists():assert json.loads(manifest.read_text())==signature,'Run differs; use another --run-name'
+    else:atomic_json(manifest,signature)
+    atomic_json(out/'normalization.json',info)
+    diagnostics=[]
+    for name,d in data.items():
+        for i,key in enumerate(d['keys']):
+            diagnostics.append(dict(split=name,trajectory=key,pair_id=int(d['pair'][i]),label=int(d['label'][i]),x_m=float(d['xy'][i,0]),y_m=float(d['xy'][i,1]),static_norm=float(np.linalg.norm(d['static'][i])),dynamic_rms=float(np.sqrt(np.mean(d['z'][i].astype(np.float64)**2))),dynamic_max_abs=float(np.abs(d['z'][i]).max()),pca_norm=float(d['pca'][i].norm()),raw_global_norm=float(d['raw_global'][i].norm()),raw_feature_norm=float(d['raw_feature'][i].norm())))
+    csv_write(out/'latent_diagnostics.csv',diagnostics)
+    print('Pairs:',{k:len(v) for k,v in split.items()},'PCA explained:',info['pca_explained'],flush=True)
+    for k,d in data.items():print(k,'outside train XY bounds:',int(d['outside_bounds'].sum()),flush=True)
+    common=common_weights(args.reservoir,args.seed,args.radius,device); rng=np.random.default_rng(args.seed);starts=torch.tensor(rng.uniform(-.95,.95,(args.restarts,2)),device=device,dtype=torch.float32);starts[0]=0
+    all_summary=[];oracle_rows=[]
+    for name,mode,fb in EXPS:
+        pca=128 if mode>=128 else mode
+        key={0:'pca16',16:'pca16',128:'raw_global',129:'raw_feature'}[mode]
+        for d in data.values(): d['pca']=d[key]
+        weights=common
+        if mode>=128:
+            w,wc,wf,bias=common
+            raw_w=torch.tensor(np.random.default_rng(args.seed+1009).uniform(-.5,.5,(128,args.reservoir)).astype(np.float32),device=device)
+            weights=(w,torch.cat([wc[:2],raw_w,wc[18:20]],0),wf,bias)
+        folder=out/name;folder.mkdir(exist_ok=True); model=CESN(weights,pca,fb,args.leak); ck=folder/'cesn.pt';tick=time.perf_counter()
+        if ck.exists():
+            saved=torch.load(ck,map_location=device,weights_only=False);model.readout=saved['readout'];model.W=saved['W'];model.Wc=saved['Wc'];model.Wf=saved['Wf'];model.bias=saved['bias'];train_seconds=saved['train_seconds'];print(name,'loaded checkpoint',flush=True)
+        else:
+            model.fit(data['train'],args.ridge);sync(device);train_seconds=time.perf_counter()-tick;atomic_pt(ck,dict(readout=model.readout.cpu(),W=model.W.cpu(),Wc=model.Wc.cpu(),Wf=model.Wf.cpu(),bias=model.bias.cpu(),pca=pca,representation=key,feedback=fb,leak=args.leak,normalization=info,train_seconds=train_seconds))
+        print(name,'fit seconds',round(train_seconds,2),flush=True)
+        for split_name in ('validation','test'):
+            d=data[split_name]; oracle=model.oracle(d,scale);oracle_rows.append(dict(experiment=name,split=split_name,train_seconds=train_seconds,**oracle)); print(name,split_name,'oracle',oracle,flush=True)
+            part=folder/split_name;part.mkdir(exist_ok=True); rows=[]
+            for n in sorted(set(args.frames)):
+                for i in range(0,len(d['keys']),args.trajectory_batch):
+                    ids=list(range(i,min(i+args.trajectory_batch,len(d['keys']))));fp=part/f'prefix_{n:03d}_batch_{i:03d}.json'
+                    if fp.exists():rr=json.loads(fp.read_text())
+                    else:rr=invert(model,d,ids,n,starts,args,lo,hi,scale);atomic_json(fp,rr)
+                    rows.extend(rr)
+                ss=[r for r in rows if r['frames']==n];print(f'{name} {split_name} {n:3d} frames | acc={100*np.mean([r["correct"] for r in ss]):.2f}% | XY={np.mean([r["xy_error_mm"] for r in ss]):.2f} mm',flush=True)
+                csv_write(part/'per_trajectory.csv',rows)
+            summary=summarize(rows);csv_write(part/'summary.csv',summary);all_summary.extend(dict(experiment=name,split=split_name,**r) for r in summary)
+        csv_write(out/'comparison.csv',all_summary);csv_write(out/'oracle_forward.csv',oracle_rows)
+    plot(out,all_summary)
+    import matplotlib.pyplot as plt
+    for split_name in ('validation','test'):
+        fig,axes=plt.subplots(2,2,figsize=(9,8))
+        for ax,(name,_,_) in zip(axes.flat,EXPS):
+            with (out/name/split_name/'per_trajectory.csv').open() as f: rr=list(csv.DictReader(f))
+            rr=[row for row in rr if int(row['frames'])==max(args.frames)]
+            for row in rr:
+                x,y,px,py=[1000*float(row[k]) for k in ('true_x_m','true_y_m','pred_x_m','pred_y_m')]
+                ax.plot([x,px],[y,py],color='gray',alpha=.45); ax.scatter(x,y,c='black',s=15); ax.scatter(px,py,c='tab:red',s=12,marker='x')
+            ax.set_title(name); ax.set_xlabel('X (mm)'); ax.set_ylabel('Y (mm)'); ax.set_aspect('equal',adjustable='datalim'); ax.grid(alpha=.2)
+        fig.suptitle('True XY (black) vs inferred XY (red)');fig.tight_layout();fig.savefig(out/f'{split_name}_xy_scatter.png',dpi=160);plt.close(fig)
+    print('DONE',out,flush=True)
+
+if __name__=='__main__':main()
