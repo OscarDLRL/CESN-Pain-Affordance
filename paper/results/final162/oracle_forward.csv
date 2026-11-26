@@ -1,3 +1,0 @@
-split,train_seconds,teacher_forced_rmse,teacher_forced_max_abs_normalized,teacher_forced_nonfinite_count,autonomous_rmse,autonomous_max_abs_normalized,autonomous_nonfinite_count
-validation,0.5116317889915081,0.6615411661933063,6.304455757141113,0,0.39369961028335476,4.943448066711426,0
-test,0.5116317889915081,0.39515491730010854,4.300296783447266,0,0.3212980032722558,4.494594097137451,0

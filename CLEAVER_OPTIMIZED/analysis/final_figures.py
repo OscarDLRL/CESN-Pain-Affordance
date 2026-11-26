@@ -3,9 +3,9 @@
 dataset/01_knife_positions.png       one simulator image with the 9 cleaver positions (split-coloured)
 dataset/02_robot_initial_positions.png  the 9 robot start positions (fixed cleaver)
 experiments/01_reconstruction.png    real vs autoencoder reconstruction (test pair, SAFE and PAIN)
-experiments/02_context_history.png   label accuracy and grasp-XY error as the history grows
+experiments/02_context_history.png   SAFE/PAIN accuracy as the history grows
 experiments/03_computational_cost.png  cost per decision of every method
-experiments/04_methods_comparison.png  ours vs simpler methods: classification and XY
+experiments/04_methods_comparison.png  classification-only comparison
 
 Reads outputs/final/results/*.csv (experiments.final_evaluation) and the checkpoints.
 
@@ -171,97 +171,107 @@ INTERP_SUB = "Interpolation (48 trajectories, 4 off-grid cleaver positions; fitt
 
 
 def context_history(out, contact, res=RES, subtitle=TEST_SUB, name="02_context_history.png"):
-    rows = read_csv(res / "history.csv")
-    fig, (a1, a2) = plt.subplots(1, 2, figsize=(9, 3.4))
-    for i, k in enumerate((1, cfg.OBS_EVERY)):
-        rr = [r for r in rows if int(r["obs_every"]) == k]
-        x = [int(r["frames"]) for r in rr]
-        lab = "every frame" if k == 1 else f"every {k} frames (deployed)"
-        a1.plot(x, [float(r["accuracy_pct"]) for r in rr], "-o", color=SERIES[i], label=lab)
-        a2.plot(x, [float(r["xy_refined_mm"]) for r in rr], "-o", color=SERIES[i], label=lab)
-    perc = float(rows[0]["xy_perception_mm"])
-    a2.axhline(perc, color=NEUTRAL, ls=":", lw=1.5)
-    a2.text(1.1, perc, f"perception only (frame 1): {perc:.1f} mm", va="bottom", fontsize=7, color=TEXT2)
-    for ax, top in ((a1, False), (a2, True)):
-        ax.set_xscale("log")
-        ax.set_xlabel("observed history (frames, log scale)")
-        mark_contact(ax, contact, top)
-    a1.set_ylabel("SAFE/PAIN accuracy (%)")
-    a1.set_ylim(40, 103)
-    a1.axhline(50, color=NEUTRAL, lw=0.8)
-    a1.set_title("Label from context inversion", loc="left")
-    a2.set_ylabel("grasp-XY error (mm)")
-    a2.set_ylim(0, max(6.5, perc * 1.4))
-    a2.set_title("Grasp XY: perception prior refined by the CESN", loc="left")
-    a1.legend(loc="center right", title="camera observation", title_fontsize=8)
-    fig.suptitle(subtitle, x=0.01, ha="left", fontsize=10)
-    fig.tight_layout()
-    fig.savefig(out / name)
-    plt.close(fig)
+    rows=read_csv(res/"history.csv")
+    fig, ax=plt.subplots(figsize=(6.4,3.4))
+    for i,k in enumerate((1,5,10)):
+        rr=[r for r in rows if int(r['obs_every'])==k]
+        ax.plot([int(r['frames']) for r in rr],[float(r['accuracy_pct']) for r in rr],'-o',color=SERIES[i],label=f'every {k} step(s)')
+    ax.set_xscale('log'); ax.set_xlabel('Elapsed sequence steps (log scale)'); ax.set_ylabel('SAFE/PAIN accuracy (%)'); ax.set_ylim(0,105)
+    mark_contact(ax,contact); ax.legend(); ax.set_title(subtitle,loc='left'); fig.tight_layout(); fig.savefig(out/name); plt.close(fig)
 
-
-NAMES = {"ours": "Ours: CESN inversion + perceived XY", "cesn_free": "CESN inversion, XY free (L-BFGS)",
-         "nearest": "Nearest training trajectory", "linear": "Linear ridge on prefix"}
-
+NAMES={'cesn_batch':'CESN batch inversion','cesn_incremental':'CESN incremental inversion','nearest':'Nearest trajectory','linear':'Linear ridge'}
 
 def computational_cost(out):
-    rows = read_csv(RES / "cost.csv")
-    pick = [r for r in rows if int(r["frames"]) in (111, -1)]
-    order = ["ours online (per control step)", "ours online (per observation, incl. AE)", "ours (batch recompute)",
-             "ours + XY prior refinement", "cesn_free (L-BFGS)", "nearest", "linear"]
-    labels = {"ours online (per control step)": "Ours online, per control step",
-              "ours online (per observation, incl. AE)": "Ours online, per observation (incl. AE)",
-              "ours (batch recompute)": "Ours, recomputed from scratch",
-              "ours + XY prior refinement": "Ours + XY prior refinement",
-              "cesn_free (L-BFGS)": "CESN inversion, XY free (L-BFGS)",
-              "nearest": "Nearest training trajectory", "linear": "Linear ridge on prefix"}
-    pick = sorted([r for r in pick if r["method"] in order], key=lambda r: order.index(r["method"]))
-    y = np.arange(len(pick))[::-1]
-    ms = [float(r["ms"]) for r in pick]
-    colors = [SERIES[0] if r["method"].startswith("ours") else NEUTRAL for r in pick]
+    rows = read_csv(RES / 'cost.csv')
+    pick = [
+        r for r in rows
+        if int(r['frames']) == 111
+        and int(r['obs_every']) == 5
+    ]
+
+    if len(pick) != 4:
+        raise ValueError('Regenerate classification-only cost.csv first')
+
     fig, ax = plt.subplots(figsize=(7.2, 3.2))
-    ax.barh(y, ms, color=colors, height=0.6)
-    ax.set_xscale("log")
-    ax.set_yticks(y, [labels[r["method"]] for r in pick])
-    ax.grid(axis="y", visible=False)
+
+    y = np.arange(len(pick))[::-1]
+    ms = [float(r['ms']) for r in pick]
+
+    ax.barh(
+        y, ms,
+        color=[
+            SERIES[0] if r['method'].startswith('cesn')
+            else NEUTRAL for r in pick
+        ],
+        height=0.65
+    )
+
+    ax.set_yticks(y, [NAMES[r['method']] for r in pick])
+
+    # Linear scale
+    ax.set_xscale('linear')
+    ax.set_xlim(0, max(55, max(ms) * 1.2))
+    ax.set_xticks(np.arange(0, 51, 10))
+    ax.minorticks_off()
+
+    # Control period
+    ax.axvline(
+        50, color=TEXT2, ls='--', lw=1.2,
+        label='20 Hz control period (50 ms)'
+    )
+
+    # Value labels
     for yi, v in zip(y, ms):
-        ax.text(v * 1.15, yi, f"{v:.2f} ms" if v < 10 else f"{v:.0f} ms", va="center", fontsize=8, color=TEXT)
-    ax.axvline(50, color=TEXT2, ls="--", lw=1)
-    ax.text(50 * 1.08, y[-1] - 0.45, "20 Hz control period (50 ms)", fontsize=7, color=TEXT2)
-    ax.set_xlim(min(ms) / 2, max(ms) * 8)
-    ax.set_xlabel("wall-clock time per decision, RTX 3090 (ms, log scale); offline methods at 111 frames")
-    ax.set_title("Computational cost per decision", loc="left")
+        ax.text(
+            v + 0.7, yi, f'{v:.2f} ms',
+            va='center', fontsize=8
+        )
+
+    ax.grid(axis='y', visible=False)
+    ax.set_xlabel('Median inference latency (ms)')
+    ax.set_title('Computational cost per decision', loc='left')
+    ax.legend(loc='lower right', fontsize=8)
+
     fig.tight_layout()
-    fig.savefig(out / "03_computational_cost.png")
+    fig.savefig(out / '03_computational_cost.png')
     plt.close(fig)
 
+    # Closed-loop deployment latency
+    p = RES / 'deployment_latency.json'
 
-def methods_comparison(out, contact, res=RES, subtitle=TEST_SUB + "; all methods fitted on train+validation", name="04_methods_comparison.png"):
-    rows = read_csv(res / "methods.csv")
-    fig, (a1, a2) = plt.subplots(1, 2, figsize=(9.5, 3.6))
-    for i, m in enumerate(["ours", "cesn_free", "nearest", "linear"]):
-        rr = [r for r in rows if r["method"] == m]
-        x = [int(r["frames"]) for r in rr]
-        a1.plot(x, [float(r["accuracy_pct"]) for r in rr], "-o", color=SERIES[i], label=NAMES[m])
-        yv = [float(r["xy_mm"]) for r in rr]
-        a2.plot(x, yv, "-o", color=SERIES[i], label=NAMES[m])
-    for ax, top in ((a1, False), (a2, True)):
-        ax.set_xscale("log")
-        ax.set_xlabel("observed history (frames, log scale)")
-        mark_contact(ax, contact, top)
-    a1.set_ylabel("SAFE/PAIN accuracy (%)")
-    a1.set_ylim(40, 103)
-    a1.axhline(50, color=NEUTRAL, lw=0.8)
-    a1.set_title("Classification", loc="left")
-    a2.set_ylabel("grasp-XY error (mm)")
-    a2.set_ylim(0, None)
-    a2.set_title("Where: grasp-XY error", loc="left")
-    handles, labels = a1.get_legend_handles_labels()
-    fig.legend(handles, labels, loc="lower center", ncol=2, bbox_to_anchor=(0.5, -0.1))
-    fig.suptitle(subtitle, x=0.01, ha="left", fontsize=10)
-    fig.tight_layout()
-    fig.savefig(out / name)
-    plt.close(fig)
+    if p.exists():
+        d = json.loads(p.read_text())
+        fig, ax = plt.subplots(figsize=(6, 2.5))
+
+        vals = [
+            d['ms_per_step'],
+            d['ms_per_observation']
+        ]
+
+        ax.barh([1, 0], vals, color=SERIES[0])
+        ax.set_yticks(
+            [1, 0],
+            ['Mean control step',
+             'Observation incl. dynamic encoder']
+        )
+
+        ax.set_xlabel('Mean detector latency (ms)')
+        ax.set_title(
+            'Closed-loop deployment (rendering and reset excluded)',
+            loc='left'
+        )
+
+        fig.tight_layout()
+        fig.savefig(out / '05_deployment_latency.png')
+        plt.close(fig)
+def methods_comparison(out, contact, res=RES, subtitle=TEST_SUB, name="04_methods_comparison.png"):
+    rows=read_csv(res/'methods.csv'); fig,axes=plt.subplots(1,3,figsize=(12,3.5),sharey=True)
+    for ax,k in zip(axes,(1,5,10)):
+        for i,(m,label) in enumerate(NAMES.items()):
+            rr=[r for r in rows if r['method']==m and int(r['obs_every'])==k]
+            ax.plot([int(r['frames']) for r in rr],[float(r['accuracy_pct']) for r in rr],marker='o',color=SERIES[i],label=label,ls='--' if m=='cesn_incremental' else '-')
+        ax.set_xscale('log'); ax.set_ylim(0,105); ax.set_title(f'Observation every {k} step(s)'); ax.set_xlabel('Elapsed steps'); mark_contact(ax,contact)
+    axes[0].set_ylabel('SAFE/PAIN accuracy (%)'); handles,labels=axes[0].get_legend_handles_labels(); fig.legend(handles,labels,loc='lower center',ncol=2); fig.suptitle(subtitle); fig.tight_layout(rect=(0,.15,1,.93)); fig.savefig(out/name); plt.close(fig)
 
 
 def offgrid_positions(out):

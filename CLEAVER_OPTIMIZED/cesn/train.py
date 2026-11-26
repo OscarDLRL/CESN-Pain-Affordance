@@ -13,6 +13,8 @@ import torch
 
 from CLEAVER_OPTIMIZED import config as cfg
 from CLEAVER_OPTIMIZED.cesn import model as cesn
+from CLEAVER_OPTIMIZED.perception import GoalPerception
+from CLEAVER_OPTIMIZED.experiments.discrete_inference import history, perceived_xy
 
 
 def main():
@@ -38,8 +40,7 @@ def main():
     params = dict(reservoir=cfg.RESERVOIR_SIZE, radius=cfg.SPECTRAL_RADIUS, leak=cfg.LEAK_RATE,
                   feedback_gain=cfg.FEEDBACK_GAIN, ridge=cfg.RIDGE, seed=cfg.SEED)
     cesn.atomic_json(out / "manifest.json", dict(parameters=params, latent_sha256=cesn.digest(lat),
-                                                  reference_frame=cfg.REFERENCE_FRAME, frames=a.frames,
-                                                  restarts=cfg.INVERSION_RESTARTS, max_iter=cfg.INVERSION_MAX_ITER))
+                                                  reference_frame=cfg.REFERENCE_FRAME, frames=a.frames))
     cesn.atomic_json(out / "normalization.json", info)
 
     model = cesn.build_c161(device)
@@ -50,28 +51,14 @@ def main():
     fit_seconds = time.perf_counter() - tick
     torch.save(dict(model.state_dict(), normalization=info, parameters=params), out / "cesn.pt")
 
-    starts = torch.tensor(np.random.default_rng(cfg.SEED).uniform(-0.95, 0.95, (cfg.INVERSION_RESTARTS, 2)),
-                          device=device, dtype=torch.float32)
-    starts[0] = 0
-    summaries, oracles = [], []
+    perception=GoalPerception.fit(pairs=cfg.TRAIN,folder=out/'perception',note='train only')
+    summaries,oracles=[],[]
     for split in a.splits:
-        d = data[split]
-        o = model.oracle(d)
-        oracles.append(dict(split=split, fit_seconds=fit_seconds, **o))
-        print("ORACLE", split, o, flush=True)
-        rows = []
-        for k in a.frames:
-            for i in range(0, len(d["keys"]), a.trajectory_batch):
-                ids = list(range(i, min(i + a.trajectory_batch, len(d["keys"]))))
-                rows.extend(cesn.invert(model, d, ids, k, starts, lo, hi, scale))
-            rr = [r for r in rows if r["frames"] == k]
-            print(f"{split} frames={k:3d} accuracy={100 * np.mean([r['correct'] for r in rr]):5.1f}% "
-                  f"XY={np.mean([r['xy_error_mm'] for r in rr]):6.2f} mm", flush=True)
-        cesn.csv_write(out / f"{split}_per_trajectory.csv", rows)
-        for r in cesn.summarize(rows):
-            summaries.append(dict(split=split, **r, future_nrmse=None if r["future_rmse"] is None else r["future_rmse"] / scale))
-        cesn.csv_write(out / "summary.csv", summaries)
-        cesn.csv_write(out / "oracle.csv", oracles)
+        d=data[split]; o=model.oracle(d); oracles.append(dict(split=split,fit_seconds=fit_seconds,**o))
+        xy,_=perceived_xy(d,perception,lo,hi); L=history(model,d,xy,1).cpu().numpy()
+        for n in a.frames:
+            summaries.append(dict(split=split,frames=n,accuracy_pct=100*float(np.mean(L[:,n-1].argmin(1)==d['label']))))
+    cesn.csv_write(out/'summary.csv',summaries); cesn.csv_write(out/'oracle.csv',oracles)
     print("DONE", out, flush=True)
 
 

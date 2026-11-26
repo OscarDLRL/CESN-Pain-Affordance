@@ -1,169 +1,85 @@
-"""Final evaluation on the TEST split with the frozen configuration (config.py).
-
-Everything is fitted on train+validation (7 cleaver locations); test = 2 unseen
-locations x 9 robot starts x {SAFE, PAIN} = 36 trajectories.
-
-Methods (label = SAFE/PAIN, XY = grasp goal):
-  ours         CESN context inversion with the grasp XY from perception (frame 1);
-               label = hypothesis with the lower prefix prediction error.
-               XY refined with a perception prior (lambda = 1).
-  cesn_free    CESN context inversion with label AND XY free (L-BFGS, 9 restarts).
-  nearest      nearest training trajectory by prefix distance (label + its XY).
-  linear       ridge on [z_static, last z_dynamic, prefix mean of z_dynamic],
-               one model per prefix length (label by sign, XY by regression).
-Ours is reported with observation every frame (k=1, same information as the
-baselines) and every OBS_EVERY frames (deployed setting).
-
-Protocols:
-  heldout_grid  fit on train+validation (7 grid positions), test = 2 held-out grid positions
-                -> outputs/final/results/{history, methods, cost}.csv
-  offgrid       fit on all 9 grid positions, test = 4 off-grid positions (interpolation)
-                -> outputs/final/interpolation/results/{history, methods}.csv
-
-    python -m CLEAVER_OPTIMIZED.experiments.final_evaluation [--protocol offgrid]
-"""
+"""Classification-only comparison; matched observation schedules and latent-only timing."""
 import argparse
+import json
 import time
-
 import numpy as np
 import torch
-
 from CLEAVER_OPTIMIZED import config as cfg
 from CLEAVER_OPTIMIZED.cesn import model as cesn
 from CLEAVER_OPTIMIZED.detector import deployment_perception, fit_deployment_cesn
-from CLEAVER_OPTIMIZED.experiments.perceived_xy_inversion import fixed_losses, prior_invert
+from CLEAVER_OPTIMIZED.experiments.discrete_inference import Incremental, fixed_losses, history, perceived_xy
 
-import h5py
+FRAMES=[1,2,3,5,8,10,12,15,23,34,45,67,90,111,140,170,222]
+STRIDES=[1,5,10]
 
-OUTS = {"heldout_grid": cfg.OUT / "final" / "results", "offgrid": cfg.OUT / "final" / "interpolation" / "results"}
-SOURCES = {"heldout_grid": cfg.RGB, "offgrid": cfg.OFFGRID}
-SIMS = {"heldout_grid": cfg.OUT / "sim_closed_loop", "offgrid": cfg.OUT / "sim_closed_loop_offgrid"}
-FRAMES = [1, 2, 3, 5, 8, 10, 12, 15, 23, 34, 45, 67, 90, 111, 140, 170, 222]
-PRIOR_LAMBDA = 1.0
-RIDGE_BASELINE = 10.0
+def features(d,n,k,xy):
+    y=d['yn'][:,:n:k]
+    return torch.cat([d['static_n'],xy,y[:,-1],y.mean(1),torch.ones_like(y[:,:1,0])],1)
 
+def ridge(A,label):
+    A=A.double(); Y=torch.as_tensor(2*label-1,device=A.device,dtype=A.dtype)
+    R=10*torch.eye(A.shape[1],device=A.device,dtype=A.dtype); R[-1,-1]=0
+    return torch.linalg.solve(A.T@A+R,A.T@Y).float()
 
-def sync():
-    torch.cuda.synchronize()
+def nearest_features(d,n,k,xy):
+    # All methods have access to the same visual and spatial inputs.
+    y=d['yn'][:,:n:k].flatten(1)
+    return torch.cat([d['static_n']/d['static_n'].shape[1]**.5,xy/2**.5,y/y.shape[1]**.5],1)
 
-
-def xy_err_mm(xy_pred_m, xy_true_m):
-    return np.linalg.norm(np.asarray(xy_pred_m) - np.asarray(xy_true_m), axis=1) * 1000
-
-
-def denorm(xyn, lo, hi):
-    return (lo + (xyn + 1) * 0.5 * (hi - lo)).cpu().numpy()
-
-
-def linear_features(d, n):
-    y = d["yn"][:, :n].cpu().numpy()
-    return np.c_[d["static_n"].cpu().numpy(), y[:, -1], y.mean(1), np.ones(len(y))]
-
-
-def ridge(A, Y, lam):
-    reg = lam * np.eye(A.shape[1])
-    reg[-1, -1] = 0
-    return np.linalg.solve(A.T @ A + reg, A.T @ Y)
-
+def timed(fn,reps=30,prepare=lambda:None):
+    for _ in range(3): prepare(); fn()
+    torch.cuda.synchronize(); samples=[]
+    for _ in range(reps):
+        prepare(); torch.cuda.synchronize()
+        t=time.perf_counter(); fn(); torch.cuda.synchronize()
+        samples.append((time.perf_counter()-t)*1000)
+    return float(np.median(samples)),float(np.quantile(samples,.95))
 
 def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--protocol", choices=list(OUTS), default="heldout_grid")
-    a = ap.parse_args()
-    OUT = OUTS[a.protocol]
-    OUT.mkdir(parents=True, exist_ok=True)
-    device = torch.device("cuda")
-    torch.manual_seed(cfg.SEED)
-    torch.set_float32_matmul_precision("high")
-    model, info, lo, hi, d = fit_deployment_cesn(device, protocol=a.protocol)
-    tr, te = d["train"], d["test"]
-    scale = info["dynamic_scale"]
-    perception = deployment_perception(a.protocol)
-    with h5py.File(SOURCES[a.protocol], "r") as f:
-        xy_p = np.stack([perception.goal_xy(f[k]["rgb"][cfg.REFERENCE_FRAME])[0] for k in te["keys"]])
-    xyn_p = torch.as_tensor(2 * (xy_p - lo.cpu().numpy()) / (hi - lo).cpu().numpy() - 1, device=device, dtype=torch.float32)
-    labels = te["label"]
-    true_xy = te["xy"]
-    starts = torch.tensor(np.random.default_rng(cfg.SEED).uniform(-0.95, 0.95, (cfg.INVERSION_RESTARTS, 2)),
-                          device=device, dtype=torch.float32)
-    starts[0] = 0
-    ids = list(range(len(te["keys"])))
-    contact = te["contact"][labels == 1]
-    print(f"[{a.protocol}] fit on {len(tr['keys'])} | test: {len(ids)} trajectories | perception XY error {xy_err_mm(xy_p, true_xy).mean():.1f} mm | "
-          f"PAIN first edge contact step median {int(np.median(contact))}", flush=True)
-
-    hist, methods = [], []
-    for n in FRAMES:
-        # ---- ours (k = 1 and deployed k)
-        for k in (1, cfg.OBS_EVERY):
-            L = fixed_losses(model, te, xyn_p, n, k)
-            pred = L.argmin(1).cpu().numpy()
-            p_lab, p_xy = prior_invert(model, te, xyn_p, n, PRIOR_LAMBDA, k)
-            row = dict(frames=n, obs_every=k, accuracy_pct=100 * float(np.mean(pred == labels)),
-                       pain_recall_pct=100 * float(np.mean(pred[labels == 1] == 1)),
-                       safe_accuracy_pct=100 * float(np.mean(pred[labels == 0] == 0)),
-                       xy_perception_mm=float(xy_err_mm(xy_p, true_xy).mean()),
-                       xy_refined_mm=float(xy_err_mm(denorm(p_xy, lo, hi), true_xy).mean()))
-            hist.append(row)
-            if k == 1:
-                methods.append(dict(method="ours", frames=n, accuracy_pct=row["accuracy_pct"], xy_mm=row["xy_refined_mm"]))
-        # ---- CESN free inversion
-        rr = cesn.invert(model, te, ids, n, starts, lo, hi, scale)
-        methods.append(dict(method="cesn_free", frames=n, accuracy_pct=100 * float(np.mean([r["correct"] for r in rr])),
-                            xy_mm=float(np.mean([r["xy_error_mm"] for r in rr]))))
-        # ---- nearest neighbour on the prefix
-        Yt, Yr = te["yn"][:, :n], tr["yn"][:, :n]
-        dist = torch.cdist(Yt.reshape(len(Yt), -1), Yr.reshape(len(Yr), -1))
-        j = dist.argmin(1).cpu().numpy()
-        methods.append(dict(method="nearest", frames=n, accuracy_pct=100 * float(np.mean(tr["label"][j] == labels)),
-                            xy_mm=float(xy_err_mm(tr["xy"][j], true_xy).mean())))
-        # ---- linear ridge per prefix length
-        W = ridge(linear_features(tr, n), np.c_[2 * tr["label"] - 1, tr["xy"]], RIDGE_BASELINE)
-        P = linear_features(te, n) @ W
-        methods.append(dict(method="linear", frames=n, accuracy_pct=100 * float(np.mean((P[:, 0] > 0) == labels)),
-                            xy_mm=float(xy_err_mm(P[:, 1:], true_xy).mean())))
-        print(f"frames {n:3d} | " + " | ".join(f"{m['method']} {m['accuracy_pct']:5.1f}% {m['xy_mm']:5.1f}mm"
-                                             for m in methods if m["frames"] == n), flush=True)
-    cesn.csv_write(OUT / "history.csv", hist)
-    cesn.csv_write(OUT / "methods.csv", methods)
-    if a.protocol != "heldout_grid":  # cost does not depend on the protocol
-        print("DONE", OUT, flush=True)
-        return
-
-    # ---- computational cost: one trajectory, one decision, latents given (GPU, wall clock)
-    cost = []
-    one = {k: (v[:1] if not isinstance(v, list) else v[:1]) for k, v in te.items()}
-
-    def timed(fn, reps=10):
-        fn()
-        sync()
-        t0 = time.perf_counter()
-        for _ in range(reps):
-            fn()
-        sync()
-        return (time.perf_counter() - t0) * 1000 / reps
-
-    for n in (23, 111):
-        cost.append(dict(method="ours (batch recompute)", frames=n, ms=timed(lambda: fixed_losses(model, one, xyn_p[:1], n, 1))))
-        cost.append(dict(method="ours + XY prior refinement", frames=n,
-                         ms=timed(lambda: prior_invert(model, one, xyn_p[:1], n, PRIOR_LAMBDA, 1), reps=3)))
-        cost.append(dict(method="cesn_free (L-BFGS)", frames=n,
-                         ms=timed(lambda: cesn.invert(model, one, [0], n, starts, lo, hi, scale), reps=3)))
-        Yr = tr["yn"][:, :n].reshape(len(tr["yn"]), -1)
-        cost.append(dict(method="nearest", frames=n, ms=timed(lambda: torch.cdist(one["yn"][:, :n].reshape(1, -1), Yr).argmin())))
-        W = ridge(linear_features(tr, n), np.c_[2 * tr["label"] - 1, tr["xy"]], RIDGE_BASELINE)
-        cost.append(dict(method="linear", frames=n, ms=timed(lambda: linear_features(one, n) @ W)))
-    sim = SIMS[a.protocol] / "summary.json"
+    ap=argparse.ArgumentParser(); ap.add_argument('--protocol',choices=['heldout_grid','offgrid'],default='heldout_grid'); a=ap.parse_args()
+    device=torch.device('cuda'); torch.manual_seed(cfg.SEED); torch.set_float32_matmul_precision('high')
+    off=a.protocol=='offgrid'; out=cfg.OUT/'final'/('interpolation/results' if off else 'results'); out.mkdir(parents=True,exist_ok=True)
+    model,info,lo,hi,d=fit_deployment_cesn(device,protocol=a.protocol)
+    tr,te=d['train'],d['test']; perception=deployment_perception(a.protocol)
+    xt,_=perceived_xy(tr,perception,lo,hi,cfg.RGB)
+    xv,p=perceived_xy(te,perception,lo,hi,cfg.OFFGRID if off else cfg.RGB)
+    labels=te['label']; methods=[]; hist=[]; cost=[]
+    spatial=np.linalg.norm(p-te['xy'],axis=1)*1000
+    cesn.csv_write(out/'perception.csv',[dict(trajectory=key,error_mm=float(e)) for key,e in zip(te['keys'],spatial)])
+    one={key:val[:1] for key,val in te.items()}; x1=xv[:1]
+    def row(name,n,k,pred):
+        pred=pred.cpu().numpy() if torch.is_tensor(pred) else np.asarray(pred)
+        return dict(method=name,frames=n,obs_every=k,observations=(n-1)//k+1,accuracy_pct=100*float(np.mean(pred==labels)),pain_recall_pct=100*float(np.mean(pred[labels==1]==1)),safe_accuracy_pct=100*float(np.mean(pred[labels==0]==0)))
+    for k in STRIDES:
+        losses=history(model,te,xv,k)
+        for n in FRAMES:
+            L=fixed_losses(model,te,xv,n,k); inc=losses[:,n-1]
+            torch.testing.assert_close(L,inc,rtol=3e-4,atol=3e-5)
+            # Tie-breaking is identical (argmin selects SAFE).
+            batch=row('cesn_batch',n,k,L.argmin(1)); online=row('cesn_incremental',n,k,inc.argmin(1))
+            methods.extend([batch,online]); hist.append({key:v for key,v in online.items() if key!='method'})
+            R=nearest_features(tr,n,k,xt); W=ridge(features(tr,n,k,xt),tr['label'])
+            j=torch.cdist(nearest_features(te,n,k,xv),R).argmin(1).cpu().numpy()
+            methods.append(row('nearest',n,k,tr['label'][j])); methods.append(row('linear',n,k,(features(te,n,k,xv)@W>0).long()))
+            # Time one actual observation at the end of an equally long prefix.
+            # Incremental state is prepared outside the timer, as in deployment.
+            if not off and n==111:
+                state=Incremental(model,one,x1,k)
+                for t in range(n-1): state.step(one['yn'][:,t] if t%k==0 else None)
+                saved=(state.r.clone(),state.prev.clone(),state.sq.clone(),state.t,state.count)
+                def restore():
+                    state.r,state.prev,state.sq,state.t,state.count=saved[0],saved[1],saved[2].clone(),saved[3],saved[4]
+                def incremental():
+                    return state.step(one['yn'][:,n-1]).argmin(1)
+                jobs={'cesn_batch':lambda:fixed_losses(model,one,x1,n,k).argmin(1), 'cesn_incremental':incremental,
+                      'nearest':lambda:torch.cdist(nearest_features(one,n,k,x1),R).argmin(1), 'linear':lambda:(features(one,n,k,x1)@W>0)}
+                for name,fn in jobs.items():
+                    ms,p95=timed(fn,prepare=restore if name=='cesn_incremental' else lambda:None); cost.append(dict(method=name,frames=n,obs_every=k,ms=ms,p95_ms=p95,scope='latent_only'))
+            print(f'k={k} n={n}: '+ ' | '.join(f"{r['method']} {r['accuracy_pct']:.1f}%" for r in methods[-4:]),flush=True)
+    cesn.csv_write(out/'history.csv',hist); cesn.csv_write(out/'methods.csv',methods)
+    if cost: cesn.csv_write(out/'cost.csv',cost)
+    sim=cfg.OUT/('sim_closed_loop_offgrid' if off else 'sim_closed_loop')/'summary.json'
     if sim.exists():
-        import json
-        s = json.loads(sim.read_text())
-        cost.append(dict(method="ours online (per control step)", frames=-1, ms=s["ms_per_step"]))
-        cost.append(dict(method="ours online (per observation, incl. AE)", frames=-1, ms=s["ms_per_observation"]))
-    cesn.csv_write(OUT / "cost.csv", cost)
-    for c in cost:
-        print(f"COST {c['method']:42s} frames={c['frames']:4d} {c['ms']:9.3f} ms", flush=True)
-    print("DONE", OUT, flush=True)
-
-
-if __name__ == "__main__":
-    main()
+        s=json.loads(sim.read_text()); cesn.atomic_json(out/'deployment_latency.json',dict(ms_per_step=s['ms_per_step'],ms_per_observation=s['ms_per_observation'],scope='detector including dynamic encoder on observation steps; excludes rendering and reset',source=str(sim)))
+    print('DONE',out,flush=True)
+if __name__=='__main__': main()

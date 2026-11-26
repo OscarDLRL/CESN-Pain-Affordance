@@ -4,9 +4,6 @@
      label_mean : mean train trajectory of the same label (ignores XY)
      nearest    : train trajectory with same label + same robot start + nearest goal
    reported as NRMSE on normalised z (same units as cesn oracle).
-2. Identifiability: with the true label, prefix loss over a 5 mm XY grid using the
-   same teacher-forced loss as the inversion. If the grid minimum is far from the
-   true XY, the inversion cannot be precise whatever the optimiser does.
 
     python -m CLEAVER_OPTIMIZED.experiments.forward_quality --ae-run v6_ref1
 """
@@ -32,7 +29,6 @@ def nrmse(p, y, a, b):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--ae-run", required=True)
-    ap.add_argument("--grid-mm", type=float, default=5.0)
     a = ap.parse_args()
     device = torch.device("cuda")
     torch.set_float32_matmul_precision("high")
@@ -67,33 +63,6 @@ def main():
         print(f"{name:28s} " + "  ".join(f"{ph} {row[f'nrmse_{ph}']:.3f}" for ph in PHASES), flush=True)
     cesn.csv_write(out / "forward_accuracy.csv", rows)
 
-    # ---------------- 2. identifiability of XY under the inversion loss
-    axes = [torch.linspace(-1, 1, max(2, math.ceil(float(w) * 1000 / a.grid_mm) + 1), device=device) for w in hi - lo]
-    grid = torch.cartesian_prod(*axes)
-    rows = []
-    with torch.no_grad():
-        for i in range(len(va["keys"])):
-            cand = torch.cat([grid, va["xyn"][i:i + 1]])
-            lab = torch.full((len(cand),), int(va["label"][i]), device=device)
-            c = model.context(lab, va["static_n"][i:i + 1].expand(len(cand), -1), cand)
-            obs = va["yn"][i:i + 1].expand(len(cand), -1, -1)
-            err = (model.predict(c, cfg.SEQ_LEN, obs) - obs).square().mean(2)  # [cand, T]
-            true_xy = lo + (va["xyn"][i] + 1) * 0.5 * (hi - lo)
-            for wname, (s, e) in WINDOWS.items():
-                loss = err[:, s:e].mean(1)
-                j = int(loss[:-1].argmin())
-                est = lo + (grid[j] + 1) * 0.5 * (hi - lo)
-                rows.append(dict(trajectory=va["keys"][i], label=int(va["label"][i]), window=wname,
-                                 grid_argmin_error_mm=float(torch.linalg.vector_norm(est - true_xy) * 1000),
-                                 true_is_global_min=int(loss[-1] <= loss[j]),
-                                 loss_true=float(loss[-1]), loss_grid_min=float(loss[j])))
-    cesn.csv_write(out / "identifiability.csv", rows)
-    print(f"\nIdentifiability (grid {a.grid_mm} mm, {len(grid)} candidates, true label):")
-    for wname in WINDOWS:
-        rr = [r for r in rows if r["window"] == wname]
-        e = [r["grid_argmin_error_mm"] for r in rr]
-        print(f"  window {wname:22s} argmin error mean {np.mean(e):6.1f} mm  median {np.median(e):6.1f} mm  "
-              f"true XY is minimum in {100 * np.mean([r['true_is_global_min'] for r in rr]):5.1f}%", flush=True)
 
 
 if __name__ == "__main__":

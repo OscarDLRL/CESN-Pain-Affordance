@@ -1,0 +1,6 @@
+{
+  "ms_per_step": 0.38465272544479356,
+  "ms_per_observation": 1.1848846647931897,
+  "scope": "detector including dynamic encoder on observation steps; excludes rendering and reset",
+  "source": "/home/oscar/Projects/CESN_Context_Inversion_Pain_Affordance/CLEAVER_OPTIMIZED/outputs/sim_closed_loop/summary.json"
+}

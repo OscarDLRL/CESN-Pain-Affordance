@@ -9,7 +9,7 @@ Stages (in order):
   autoencoder   V6 dual encoder, reference frame 1             ~6 min
   latents       z_static / z_dynamic for all 162 trajectories  ~2 min
   selection     model selection on train+validation only (CV over 7 cleaver locations):
-                CESN forward sweeps, perception, perceived-XY inversion   ~10 min
+                CESN forward sweeps, perception, discrete SAFE/PAIN inference   ~10 min
   sim           closed loop in ManiSkill on the 18 test pairs  ~3 min
   evaluation    final test evaluation: history, methods, cost  ~5 min
   interpolation off-grid protocol: latents of the 4 off-grid positions, CESN + perception
@@ -50,7 +50,7 @@ def stage_selection():
     py("CLEAVER_OPTIMIZED.experiments.forward_quality", "--ae-run", cfg.AE_RUN)
     py("CLEAVER_OPTIMIZED.experiments.forward_sweep_cv", "--ae-run", cfg.AE_RUN,
        "--xy-gains", 1, 3, 10, 30, "--fb-gains", 0, 0.1, 0.25, 0.5, 1)
-    py("CLEAVER_OPTIMIZED.experiments.forward_sweep_cv", "--ae-run", cfg.AE_RUN, "--name", "forward_sweep_cv_dyn",
+    py("CLEAVER_OPTIMIZED.experiments.forward_sweep_cv", "--ae-run", cfg.AE_RUN, "--name", "forward_sweep_discrete_dyn",
        "--xy-gains", 1, "--fb-gains", 0.5, 1, "--leaks", 0.015, 0.03, 0.06, 0.12, "--radii", 0.6, 0.9, "--ridges", 3, 10, 30)
     py("CLEAVER_OPTIMIZED.experiments.knife_localization")
     py("CLEAVER_OPTIMIZED.experiments.perceived_xy_inversion", "--ae-run", cfg.AE_RUN)
@@ -78,7 +78,7 @@ def stage_figures():
 STAGES = {
     "autoencoder": (stage_autoencoder, [AE / "autoencoder.pt"]),
     "latents": (stage_latents, [AE / "latents.h5"]),
-    "selection": (stage_selection, [AE / "forward_sweep_cv_dyn" / "summary.csv", AE / "perceived_xy_inversion" / "online_fixed.csv"]),
+    "selection": (stage_selection, [AE / "forward_sweep_discrete_dyn" / "summary.csv", AE / "discrete_cv" / "online_fixed.csv"]),
     "sim": (stage_sim, [cfg.OUT / "sim_closed_loop" / "summary.json"]),
     "evaluation": (stage_evaluation, [FINAL / "results" / "methods.csv"]),
     "interpolation": (stage_interpolation, [FINAL / "interpolation" / "results" / "methods.csv",
@@ -98,10 +98,10 @@ Test = 2 unseen cleaver positions (K5, K6) x 9 robot starts x {SAFE, PAIN} = 36 
 
 ## experiments/
 - `01_reconstruction.png` - real frames vs V6 autoencoder reconstruction (test pair, SAFE and PAIN)
-- `02_context_history.png` - SAFE/PAIN accuracy and grasp-XY error as the observed history grows
+- `02_context_history.png` - SAFE/PAIN accuracy as the observed history grows
   (camera every frame vs every 5 frames, deployed)
 - `03_computational_cost.png` - wall-clock cost per decision for every method (RTX 3090)
-- `04_methods_comparison.png` - ours vs CESN with free XY, nearest neighbour, linear ridge
+- `04_methods_comparison.png` - CESN batch/incremental, nearest neighbour, linear ridge
 
 ## interpolation/ (protocol B: fitted on all 9 grid positions, tested on 4 off-grid positions)
 - `dataset/01_offgrid_knife_positions.png` - the 4 off-grid cleaver positions I1-I4

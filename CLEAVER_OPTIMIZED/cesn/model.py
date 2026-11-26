@@ -4,7 +4,7 @@ Context c = [pain one-hot (2), z_static (128, globally scaled), grasp XY (2, in 
 Drive     = c @ Wc + bias + r @ W + y_prev @ Wf          (no explicit time)
 Readout   = [1, one-hot, XY, r] -> z_dynamic(t)
 Training is teacher forced (y_prev = observed z_dynamic). Context inversion
-searches (label, XY) that best explain an observed z_dynamic prefix.
+compares SAFE/PAIN hypotheses given fixed spatial and visual inputs.
 
 Random weights are generated in exactly the same order as the original
 C161 implementation, so the same seed reproduces the same reservoir.
@@ -266,110 +266,3 @@ def build_c161(device, seed=cfg.SEED):
     return CESN(w, cfg.SPECTRAL_RADIUS, cfg.LEAK_RATE, cfg.FEEDBACK_GAIN)
 
 
-# ------------------------------------------------------------------ context inversion
-def invert(model, d, ids, n, starts, lo, hi, scale, max_iter=cfg.INVERSION_MAX_ITER, obs_every=1):
-    """For each trajectory, find (label, XY) minimising the error on the observed steps
-    of the first n steps (every obs_every-th step is a real camera observation)."""
-    device = lo.device
-    B, R, T = len(ids), len(starts), d["yn"].shape[1]
-    obs, static, full = d["yn"][ids, :n], d["static_n"][ids], d["yn"][ids]
-    labs = torch.arange(2, device=device)[None, :, None].expand(B, 2, R).reshape(-1)
-    S = static.shape[-1]
-    ss = static[:, None, None, :].expand(B, 2, R, S).reshape(B * 2 * R, S)
-    yy = obs[:, None, None].expand(B, 2, R, n, obs.shape[-1]).reshape(-1, n, obs.shape[-1])
-    raw = torch.atanh(starts.clamp(-0.999, 0.999))[None, None].expand(B, 2, R, 2).reshape(-1, 2).clone().requires_grad_(True)
-    opt = torch.optim.LBFGS([raw], lr=1.0, max_iter=max_iter, max_eval=2 * max_iter, history_size=20,
-                            tolerance_grad=1e-7, tolerance_change=1e-9, line_search_fn="strong_wolfe")
-    best_loss = torch.full((len(raw),), float("inf"), device=device)
-    best_xy = torch.zeros_like(raw)
-    calls = 0
-    seen = torch.tensor([model.observed(t, obs_every) for t in range(n)], device=device, dtype=torch.float32)
-
-    def losses():
-        xy = raw.tanh()
-        p = model.predict(model.context(labs, ss, xy), n, yy, obs_every)
-        return ((p - yy).square().mean(2) * seen).sum(1) / seen.sum(), xy
-
-    def remember(loss, xy):
-        with torch.no_grad():
-            better = loss.detach() < best_loss
-            best_loss[better] = loss.detach()[better]
-            best_xy[better] = xy.detach()[better]
-
-    def closure():
-        nonlocal calls
-        opt.zero_grad(set_to_none=True)
-        loss, xy = losses()
-        remember(loss, xy)
-        total = loss.sum()
-        total.backward()
-        calls += 1
-        return total
-
-    sync(device)
-    tick = time.perf_counter()
-    opt.step(closure)
-    with torch.no_grad():
-        loss, xy = losses()
-        remember(loss, xy)
-        calls += 1
-        bl, bx = best_loss.view(B, 2, R), best_xy.view(B, 2, R, 2)
-        v, j = bl.min(-1)
-        x = bx.gather(2, j[:, :, None, None].expand(B, 2, 1, 2)).squeeze(2)
-        pred = v.argmin(1)
-        chosen = x[torch.arange(B, device=device), pred]
-        sync(device)
-        elapsed = (time.perf_counter() - tick) * 1000
-        forecast = model.predict(model.context(pred, static, chosen), T, obs, obs_every)
-        if n < T:
-            future = (forecast[:, n:].double() - full[:, n:].double()).square().mean((1, 2)).sqrt() * scale
-        else:
-            future = torch.full((B,), float("nan"), device=device)
-        world = (lo + (chosen + 1) * 0.5 * (hi - lo)).cpu().numpy()
-        vv, pl, fut = v.cpu().numpy(), pred.cpu().numpy(), future.cpu().numpy()
-    assert np.isfinite(vv).all() and np.isfinite(world).all()
-    rows = []
-    for j, i in enumerate(ids):
-        lab = int(d["label"][i])
-        good, bad = float(vv[j, lab]), float(vv[j, 1 - lab])
-        rows.append(dict(
-            trajectory=d["keys"][i], pair_id=int(d["pair"][i]), frames=n, observed_percent=100 * n / T,
-            true_label=lab, pred_label=int(pl[j]), correct=int(lab == pl[j]),
-            tie=int(abs(good - bad) <= 1e-10 * max(1, good, bad)),
-            true_x_m=float(d["xy"][i, 0]), true_y_m=float(d["xy"][i, 1]),
-            pred_x_m=float(world[j, 0]), pred_y_m=float(world[j, 1]),
-            xy_error_mm=float(np.linalg.norm(world[j] - d["xy"][i]) * 1000),
-            future_rmse=float(fut[j]) if np.isfinite(fut[j]) else None,
-            prefix_rmse=float(math.sqrt(min(vv[j])) * scale), margin=(bad - good) / max(good + bad, 1e-12),
-            safe_loss=float(vv[j, 0]), pain_loss=float(vv[j, 1]),
-            first_contact_step=int(d["contact"][i]), precontact=int(n <= d["contact"][i]),
-            outside_train_xy_bounds=int(d["outside_bounds"][i]),
-            batch_inference_ms=elapsed, amortized_inference_ms=elapsed / B, closure_calls=calls))
-    return rows
-
-
-def summarize(rows):
-    out = []
-
-    def mean(rr, k):
-        a = [float(r[k]) for r in rr if r[k] is not None]
-        return float(np.mean(a)) if a else None
-
-    for n in sorted({r["frames"] for r in rows}):
-        allr = [r for r in rows if r["frames"] == n]
-        for subset, rr in (("all", allr), ("precontact", [r for r in allr if r["precontact"]])):
-            if not rr:
-                continue
-            safe = [r for r in rr if r["true_label"] == 0]
-            pain = [r for r in rr if r["true_label"] == 1]
-            xy = [r["xy_error_mm"] for r in rr]
-            out.append(dict(
-                frames=n, observed_percent=rr[0]["observed_percent"], subset=subset, count=len(rr),
-                accuracy_pct=100 * mean(rr, "correct"),
-                safe_accuracy_pct=100 * mean(safe, "correct") if safe else None,
-                pain_recall_pct=100 * mean(pain, "correct") if pain else None,
-                tie_pct=100 * mean(rr, "tie"), xy_mean_mm=float(np.mean(xy)), xy_median_mm=float(np.median(xy)),
-                xy_p90_mm=float(np.quantile(xy, 0.9)), future_rmse=mean(rr, "future_rmse"),
-                prefix_rmse=mean(rr, "prefix_rmse"), mean_margin=mean(rr, "margin"),
-                amortized_inference_ms=mean(rr, "amortized_inference_ms")))
-    return out

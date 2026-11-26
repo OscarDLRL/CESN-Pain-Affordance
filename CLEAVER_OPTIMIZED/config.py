@@ -32,11 +32,11 @@ DYNAMIC_LATENT_DIM = 128
 DETAIL_SIZE = 64  # 0 disables the global linear detail branch
 
 # ---------------------------------------------------------------- CESN (configuration B = C161 + ridge 30)
-# Context = [pain one-hot (2), z_static (128, globally scaled), grasp XY (2)].
+# Conditioning vector = [pain one-hot (2), z_static (128), grasp XY (2)].
+# Only SAFE/PAIN is inferred; visual and spatial inputs are known.
 # No explicit time. Output feedback = previous z_dynamic (observed when a camera
 # frame exists, own prediction otherwise).
-# Selected by leave-one-location-out CV on train+validation (forward_sweep_cv_dyn):
-# best grasp-XY identifiability during/after the interaction, 94% label at 10 frames.
+# Existing configuration retained from earlier CV; classification-only CV must be reported separately.
 RESERVOIR_SIZE = 1500
 SPECTRAL_RADIUS = 0.6
 LEAK_RATE = 0.015
@@ -51,5 +51,3 @@ DETECT_TAU = 0.1     # PAIN score threshold, chosen on CV (100% detection, 0% fa
 DETECT_CONSECUTIVE = 2
 
 INVERSION_FRAMES = [1, 2, 3, 5, 10, 12, 23, 45, 67, 112, 157, SEQ_LEN]
-INVERSION_RESTARTS = 9
-INVERSION_MAX_ITER = 40

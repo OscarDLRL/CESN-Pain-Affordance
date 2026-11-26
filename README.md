@@ -1,73 +1,34 @@
-# CESN - Context Inversion for Pain Affordance
+# CLEAVER_OPTIMIZED
 
-Research on visual context inversion using Contextual Echo State
-Networks (CESN) and robotic demonstrations generated with ManiSkill.
+V6 dual-encoder autoencoder (z_static 128 + z_dynamic 128) + CESN C161 (no explicit time).
+`CLEAVER/` is the previous attempt (latent 200, time in the CESN context): frozen, nothing here imports it.
+Old checkpoints and experiments: `~/CLEAVER_BACKUPS/pre_clean_20261126_181409/`.
 
-## Implemented Methods
+## Layout
+```
+config.py                 single source of truth (paths, split, REFERENCE_FRAME=1, dims, C161)
+data.py                   dataset access; the reference frame is applied only here / in extract_latents
+autoencoder/model.py      V6DualEncoder (loads old V6Compact128 checkpoints)
+autoencoder/losses.py     V6 objective
+autoencoder/train.py      two-stage training (static, then dynamic with static frozen)
+autoencoder/extract_latents.py
+cesn/model.py             CESN C161, latent loading, normalisation, context inversion
+cesn/train.py             fit + oracle + inversion
+analysis/reconstruction.py  static / settle / moving-region errors + panels
+experiments/ae_benchmark.py AE candidates comparison
+outputs/                  (git-ignored) autoencoder/<run>/{autoencoder.pt, latents.h5, cesn_c161/, analysis/}
+```
 
-### 1. Explicit Context CESN
+## Reference frame
+The cleaver drops ~14.7 mm between frame 0 and 1 (physics settling) and is static
+afterwards until grasped. Frame 0 as reference puts that drop into every delta
+(knife edges "move" with the arm). Everything uses frame 1; sequences are frames 1..222.
 
-Located in `CESN/`.
-
-The model includes explicit SAFE/PAIN task information and spatial
-grasp coordinates in its context.
-
-### 2. Spatial-Only CESN
-
-Located in `CESN_spatial_only/`.
-
-The model does not receive explicit SAFE/PAIN information.
-Grasp coordinates are recovered through context inversion, and
-affordance classification is derived from the inferred geometry.
-
-## Shared Configuration
-
-| Parameter | Value |
-|---|---|
-| Robot | Franka Panda |
-| Simulator | ManiSkill |
-| RGB resolution | 256 x 256 |
-| Dynamic latent dimension | 200 |
-| Static PCA dimension | 16 |
-| Reservoir size | 1500 |
-| Ridge regularization | 0.5 |
-| Spectral radius | 0.95 |
-| Leak rate | 0.25 |
-| Input scale | 0.50 |
-| Bias scale | 0.10 |
-| CESN seed | 42 |
-| Scene seed | 123 |
-| Training pairs | 70 |
-| Test pairs | 11 |
-| Validation pairs | 0 |
-| Inversion optimizer | L-BFGS |
-
-## Repository Structure
-
-- `CESN/core/`: Autoencoder and explicit CESN implementation.
-- `CESN/analysis/`: Context inversion, baselines and diagnostics.
-- `CESN/outputs/`: Experimental results and figures.
-- `CESN_spatial_only/`: Spatial-only implementation and results.
-- `Data_makers/`: ManiSkill dataset generation.
-
-## Environments
-
-- `maniskill-data`: Dataset generation.
-- `maniskill-esn`: Model training, inversion and analysis.
-
-Dependencies are provided in the corresponding requirements files.
-
-## Experimental Evidence
-
-The repository includes selected CSV and JSON results, paper figures,
-baseline comparisons, context stability diagnostics and ridge ablations.
-
-Hyperparameter selection used test-set metrics. These results should
-therefore not be interpreted as an independent post-selection evaluation.
-
-## Data Availability
-
-Large datasets, trained checkpoints, generated latents and videos
-are excluded from Git and must be preserved separately for exact
-numerical reproduction.
-
+## Pipeline (run from the repository root)
+```
+python -m CLEAVER_OPTIMIZED.autoencoder.train --run v6_ref1
+python -m CLEAVER_OPTIMIZED.autoencoder.extract_latents --run v6_ref1
+python -m CLEAVER_OPTIMIZED.cesn.train --ae-run v6_ref1                 # validation
+python -m CLEAVER_OPTIMIZED.analysis.reconstruction --checkpoint outputs/autoencoder/v6_ref1/autoencoder.pt
+```
+Smoke test: `--run smoke --smoke` on train.
