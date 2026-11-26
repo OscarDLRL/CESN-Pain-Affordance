@@ -60,7 +60,7 @@ Important files:
 - `hyperparameter_selection.csv`: validation sweeps for E24 clipping and E26 alpha.
 - `selected_hyperparameters.json`: selected settings.
 - `E*/validation/per_trajectory.csv` and `E*/test/per_trajectory.csv`: per-trajectory predictions.
-- `paper_figures/`: six publication-oriented figures per split.
+- `paper/figures/`: six publication-oriented figures per split.
 
 To regenerate figures without rerunning experiments:
 

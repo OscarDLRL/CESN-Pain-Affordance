@@ -172,7 +172,7 @@ def evaluate(args):
     starts=c.tensor(np.random.default_rng(42).uniform(-.95,.95,(9,2)),device);starts[0]=0
     axes=[torch.linspace(-1,1,max(2,int(np.ceil(float(w)*1000/args.grid_mm-1e-5))+1),device=device) for w in hi-lo];grid=torch.cartesian_prod(*axes)
     tr=data['train']; split_names=['validation','test'] if args.mode=='existing' else ['offgrid_known_start','offgrid_new_start']
-    out=ROOT/'paper_results/final162'/('context_inversion_cost' if args.mode=='existing' else 'offgrid_interpolation');figdir=ROOT/'paper_figures/final162'/out.name;cache=BASE/'evaluation_cache'/out.name
+    out=ROOT/'paper/results/final162'/('context_inversion_cost' if args.mode=='existing' else 'offgrid_interpolation');figdir=ROOT/'paper/figures/final162'/out.name;cache=BASE/'evaluation_cache'/out.name
     out.mkdir(parents=True,exist_ok=True);figdir.mkdir(parents=True,exist_ok=True);cache.mkdir(parents=True,exist_ok=True)
     ext_hash=None
     if args.mode=='external':

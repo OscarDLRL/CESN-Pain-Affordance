@@ -7,7 +7,7 @@ ROOT=Path(__file__).resolve().parent
 BASE=ROOT/'CLEAVER_OPTIMIZED'
 DATA=ROOT/'datasets/cleaver_extended_workspace_162_complete/cleaver_same_goal_162.h5'
 OUT=BASE/'outputs/final162'
-FIG=ROOT/'paper_figures/final162'
+FIG=ROOT/'paper/figures/final162'
 # Zero-based object IDs: K2 validation, K5/K6 test. All lie in train hull.
 GROUPS={'train':[0,2,3,6,7,8], 'validation':[1], 'test':[4,5]}
 FRAMES=[1,2,3,5,10,12,23,45,67,112,157,223]
@@ -51,7 +51,7 @@ def split_pairs(pair,obj):
     if old in s: s=s.replace(old,new)
     assert new in s, 'Unexpected CESN loader source'
     changes[p]=s
-    p=BASE/'analysis/visualize_dataset_positions.py';s=p.read_text().replace('datasets/cleaver_extended_workspace_162/','datasets/cleaver_extended_workspace_162_complete/').replace('paper_figures/extended_workspace','paper_figures/final162')
+    p=BASE/'analysis/visualize_dataset_positions.py';s=p.read_text().replace('datasets/cleaver_extended_workspace_162/','datasets/cleaver_extended_workspace_162_complete/').replace('paper/figures/extended_workspace','paper/figures/final162')
     changes[p]=s
     for p,s in changes.items(): compile(s,str(p),'exec')
     for p,s in changes.items(): p.write_text(s)
@@ -146,7 +146,7 @@ def main():
     selected=dict(model_name='CESN-Vision',source_configuration='C161',dataset=str(DATA.relative_to(ROOT)),static_latent_dim=128,dynamic_latent_dim=128,reservoir_size=1500,spectral_radius=.6,leak_rate=.015,ridge=10.,feedback_gain=1.,seed=42,prediction_mode='absolute',autoencoder_directory=str(ae.relative_to(BASE)),checkpoint=str((out/'cesn.pt').relative_to(BASE)),split_file='split.json')
     b.atomic_json(BASE/'selected_model.json',selected)
     # Preserve small scientific outputs outside ignored model directories.
-    paper=ROOT/'paper_results'/'final162';paper.mkdir(parents=True,exist_ok=True)
+    paper=ROOT/'paper/results'/'final162';paper.mkdir(parents=True,exist_ok=True)
     for src in (out/'comparison.csv',out/'oracle_forward.csv',out/'rgb_sample_metrics.csv',out/'normalization.json',out/'split_used.json',out/'manifest.json',ae/'training_summary.json'):
         shutil.copy2(src,paper/src.name)
     for sn in (['validation'] if a.validation_only else ['validation','test']):

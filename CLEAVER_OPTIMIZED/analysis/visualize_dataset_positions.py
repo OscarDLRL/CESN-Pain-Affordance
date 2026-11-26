@@ -68,7 +68,7 @@ def viewer(path,rows,pair):
     finally:env.close()
 
 def main():
-    p=argparse.ArgumentParser();p.add_argument('--dataset',type=Path,default=ROOT/'datasets/cleaver_extended_workspace_162_complete/cleaver_same_goal_162.h5');p.add_argument('--out',type=Path,default=ROOT/'paper_figures/final162');p.add_argument('--show',action='store_true');p.add_argument('--viewer',action='store_true');p.add_argument('--pair',type=int,default=40);a=p.parse_args(); rows=read(a.dataset)
+    p=argparse.ArgumentParser();p.add_argument('--dataset',type=Path,default=ROOT/'datasets/cleaver_extended_workspace_162_complete/cleaver_same_goal_162.h5');p.add_argument('--out',type=Path,default=ROOT/'paper/figures/final162');p.add_argument('--show',action='store_true');p.add_argument('--viewer',action='store_true');p.add_argument('--pair',type=int,default=40);a=p.parse_args(); rows=read(a.dataset)
     if a.viewer:viewer(a.dataset,rows,a.pair)
     else:figures(rows,a.out,a.show)
 if __name__=='__main__':main()

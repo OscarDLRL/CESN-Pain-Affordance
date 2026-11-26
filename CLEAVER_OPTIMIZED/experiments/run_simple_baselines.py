@@ -8,7 +8,7 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
-ROOT=Path.cwd(); BASE=ROOT/'CLEAVER_OPTIMIZED/outputs/final162'; PAPER=ROOT/'paper_results/final162'; OUT=PAPER/'baselines'; FIG=ROOT/'paper_figures/final162/baselines'
+ROOT=Path.cwd(); BASE=ROOT/'CLEAVER_OPTIMIZED/outputs/final162'; PAPER=ROOT/'paper/results/final162'; OUT=PAPER/'baselines'; FIG=ROOT/'paper/figures/final162/baselines'
 LAT=BASE/'autoencoder_lightweight128_matched/cleaver_lightweight_latent128.h5'
 FRAMES=[1,2,3,5,10,12,23,45,67,112,157,223]; ALPHAS=[.01,.1,1.,10.,100.]
 

@@ -12,7 +12,7 @@ from CLEAVER_OPTIMIZED.cesn import model as b
 
 ROOT=Path.cwd(); BASE=ROOT/'CLEAVER_OPTIMIZED/outputs/final162'
 AE=BASE/'autoencoder_lightweight128_matched'; LAT=AE/'cleaver_lightweight_latent128.h5'; CESN=BASE/'CESN_Vision'
-OUT=ROOT/'paper_results/final162/context_inversion'; FIG=ROOT/'paper_figures/final162/context_inversion'
+OUT=ROOT/'paper/results/final162/context_inversion'; FIG=ROOT/'paper/figures/final162/context_inversion'
 METHODS=('L-BFGS','Dense grid search','Nearest demonstration')
 
 def tensor(x,device): return torch.as_tensor(x,dtype=torch.float32,device=device)
