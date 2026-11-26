@@ -1,0 +1,13 @@
+method,frames,ms
+ours (batch recompute),23,2.9538607981521636
+ours + XY prior refinement,23,20.45003466385727
+cesn_free (L-BFGS),23,387.960413005203
+nearest,23,0.1221363985678181
+linear,23,0.09001530124805868
+ours (batch recompute),111,10.712828498799354
+ours + XY prior refinement,111,146.94423366260403
+cesn_free (L-BFGS),111,1089.3039876633945
+nearest,111,0.10948700073640794
+linear,111,0.10249780025333166
+ours online (per control step),-1,0.38465272544479356
+"ours online (per observation, incl. AE)",-1,1.1848846647931897

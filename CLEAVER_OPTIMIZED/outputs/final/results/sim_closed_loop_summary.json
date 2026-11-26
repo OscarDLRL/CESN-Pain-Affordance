@@ -1,0 +1,20 @@
+{
+  "pairs": 18,
+  "failed_pairs": 0,
+  "pain_trajectories": 18,
+  "safe_trajectories": 18,
+  "pain_stopped_before_contact_pct": 100.0,
+  "pain_edge_contact_avoided_pct": 100.0,
+  "safe_false_stop_pct": 0.0,
+  "median_lead_frames": 111.0,
+  "min_lead_frames": 91,
+  "goal_xy_error_mm_mean": 4.802574754510654,
+  "ms_per_step": 0.38465272544479356,
+  "ms_per_observation": 1.1848846647931897,
+  "settings": {
+    "obs_every": 5,
+    "tau": 0.1,
+    "consecutive": 2,
+    "ae_run": "v6_ref1"
+  }
+}

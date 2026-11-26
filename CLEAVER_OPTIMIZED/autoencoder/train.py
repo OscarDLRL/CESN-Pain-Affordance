@@ -1,621 +1,266 @@
-from __future__ import annotations
+"""Train the V6 dual-encoder AE in two stages (recipe of the best V6Compact128 run).
 
-from pathlib import Path
+Stage 1: static encoder + aux decoder on reference images only, then frozen.
+Stage 2: dynamic encoder/decoder on (reference, frame_t) pairs.
+Model selection on the validation split only.
+
+    python -m CLEAVER_OPTIMIZED.autoencoder.train --run v6_ref1
+    python -m CLEAVER_OPTIMIZED.autoencoder.train --run v6_ref1 --resume
+    python -m CLEAVER_OPTIMIZED.autoencoder.train --run smoke --smoke
+"""
 import argparse
 import json
+import time
 
-import h5py
 import numpy as np
 import torch
 import torch.nn.functional as F
-from torch.utils.data import Dataset, DataLoader
-
-from CLEAVER_OPTIMIZED.autoencoder.model import (
-    PainStaticDynamicAutoencoderV6Native256Latent128,
-)
-
-from CLEAVER_OPTIMIZED.autoencoder.training_utils import (
-    DATA_PATH,
-    SPLIT_SEED,
-    TRAIN_SEED,
-    collect_static_index,
-    collect_dynamic_index,
-    seed_everything,
-    full_losses,
-    rgb_to_device,
-    evaluate,
-)
 
 from CLEAVER_OPTIMIZED import config as cfg
-
-ROOT = Path(__file__).resolve().parents[2]
-
-OUT_DIR = cfg.AE_DIR
-
-MODEL_PATH = cfg.AE_MODEL
-
-SUMMARY_PATH = (
-    OUT_DIR
-    / "training_summary_native256_latent128_extended.json"
-)
-
-FINAL_TRAIN_PAIRS = 54
-TEST_PAIRS = 9
-IMAGE_SIZE = 256
-STATIC_LATENT_DIM = 128
-DYNAMIC_LATENT_DIM = 128
+from CLEAVER_OPTIMIZED import data
+from CLEAVER_OPTIMIZED.autoencoder.losses import full_losses, state_loss, temporal_smoothness
+from CLEAVER_OPTIMIZED.autoencoder.model import V6DualEncoder
 
 
-def prepare_rgb_native256(rgb):
-    x = (
-        torch.from_numpy(
-            np.asarray(
-                rgb,
-                dtype=np.uint8,
-            )
-        )
-        .permute(2, 0, 1)
-        .float()
-        / 255.0
-    )
-
-    if tuple(x.shape[-2:]) != (256, 256):
-        raise RuntimeError(
-            f"Expected native RGB 256x256, got {tuple(x.shape[-2:])}"
-        )
-
-    return x
+def seed_everything(seed):
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
 
 
-class H5StaticDataset256(Dataset):
-    def __init__(self, path, index):
-        self.path = str(path)
-        self.index = list(index)
-        self._h5 = None
-
-    def _file(self):
-        if self._h5 is None:
-            self._h5 = h5py.File(
-                self.path, "r"
-            )
-        return self._h5
-
-    def __len__(self):
-        return len(self.index)
-
-    def __getitem__(self, idx):
-        key = self.index[idx]
-        return prepare_rgb_native256(
-            self._file()[key]["rgb"][0]
-        )
+def atomic_save(obj, path):
+    tmp = path.with_suffix(".tmp")
+    torch.save(obj, tmp)
+    tmp.replace(path)
 
 
-class H5DynamicDataset256(Dataset):
-    def __init__(self, path, index):
-        self.path = str(path)
-        self.index = list(index)
-        self._h5 = None
-        self.frame0_cache = {}
-
-    def _file(self):
-        if self._h5 is None:
-            self._h5 = h5py.File(self.path, "r")
-        return self._h5
-
-    def __len__(self):
-        return len(self.index)
-
-    @staticmethod
-    def prepare_uint8(rgb):
-        return torch.from_numpy(
-            np.asarray(rgb, dtype=np.uint8)
-        ).permute(2, 0, 1).contiguous()
-
-    def __getitem__(self, idx):
-        key, t = self.index[idx]
-        g = self._file()[key]
-
-        if key not in self.frame0_cache:
-            self.frame0_cache[key] = (
-                self.prepare_uint8(g["rgb"][0])
-            )
-
-        return {
-            "key": key,
-            "frame0": self.frame0_cache[key],
-            "frame_t": self.prepare_uint8(g["rgb"][t]),
-        }
+def write_json(path, obj):
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(obj, indent=2) + "\n")
+    tmp.replace(path)
 
 
-def build_final_splits(path):
-    from CLEAVER_OPTIMIZED.config import TRAIN, TEST
-    return {"train": TRAIN, "test": TEST}
+def amp():
+    return torch.autocast("cuda", dtype=torch.float16)
 
+
+def pair_batches(n_traj, frames, batch, rng=None):
+    """Yield (trajectory index array, frame index array)."""
+    ix = np.arange(n_traj * len(frames))
+    if rng is not None:
+        rng.shuffle(ix)
+    for i in range(0, len(ix), batch):
+        a = ix[i:i + batch]
+        yield torch.as_tensor(a // len(frames), device="cuda"), torch.as_tensor(frames[a % len(frames)], device="cuda")
 
 
 @torch.no_grad()
-def build_static_cache(model, dataset_path, pair_ids, device):
+def cache_static(model, rgb):
+    model.eval()
+    z = torch.zeros((len(rgb), model.static_latent_dim), device="cuda", dtype=torch.float16)
+    mse = torch.zeros(len(rgb), device="cuda")
+    for i in range(0, len(rgb), 16):
+        x = data.to_tensor(rgb[i:i + 16, cfg.REFERENCE_FRAME], "cuda")
+        with amp():
+            s = model.encode_static(x)
+            rec = model.decode_static_aux(s)
+        z[i:i + 16] = s
+        mse[i:i + 16] = (rec.float() - x).square().flatten(1).mean(1)
+    return z, mse
 
+
+def run_epoch(model, rgb, frames, cache, batch, opt=None, scaler=None, rng=None, state=None, w_state=0.0, w_smooth=0.0):
+    """state: standardised robot state [N, 223, 4] on GPU (training-only target).
+    w_smooth > 0 also encodes frames t-1 and t+1 (frames must exclude the ends)."""
+    training = opt is not None
+    model.train(training)
     model.static_encoder.eval()
     model.static_aux_decoder.eval()
-
-    keys = collect_static_index(dataset_path, pair_ids)
-
-    latent_cache = {}
-    mse_cache = {}
-
-    with h5py.File(dataset_path, "r") as h5:
-        for start in range(0, len(keys), 16):
-
-            chunk = keys[start:start + 16]
-
-            rgb = np.stack([
-                h5[key]["rgb"][0]
-                for key in chunk
-            ])
-
-            frame0 = (
-                torch.from_numpy(rgb)
-                .permute(0, 3, 1, 2)
-                .to(device)
-                .float()
-                .div_(255.0)
-            )
-
-            with torch.autocast(
-                device_type="cuda",
-                dtype=torch.float16,
-                enabled=True,
-            ):
-                z = model.encode_static(frame0)
-                reconstruction = model.decode_static_aux(z)
-
-            mse = (
-                (reconstruction.float() - frame0)
-                .square()
-                .flatten(1)
-                .mean(dim=1)
-            )
-
-            for i, key in enumerate(chunk):
-                latent_cache[key] = z[i].detach().clone()
-                mse_cache[key] = mse[i].detach().clone()
-
-    print(
-        f"STATIC CACHE COMPLETE | "
-        f"trajectories={len(latent_cache)}",
-        flush=True,
-    )
-
-    return latent_cache, mse_cache
+    z_static, static_mse = cache
+    sums, count = {}, 0
+    for ix, t in pair_batches(len(rgb), frames, batch, rng if training else None):
+        ref = data.to_tensor(rgb[ix, cfg.REFERENCE_FRAME], "cuda")
+        y = data.to_tensor(rgb[ix, t], "cuda")
+        if training:
+            opt.zero_grad(set_to_none=True)
+        with torch.set_grad_enabled(training), amp():
+            z_dyn = None
+            if w_smooth:
+                # t, t-1, t+1 in ONE encoder call: BatchNorm must normalise them together
+                B = len(ix)
+                frames3 = data.to_tensor(torch.cat([rgb[ix, t], rgb[ix, t - 1], rgb[ix, t + 1]]), "cuda")
+                z3 = model.encode_dynamic(frames3 - ref.repeat(3, 1, 1, 1))
+                z_dyn = z3[:B]
+            out = model(ref, y, z_static[ix], static_mse[ix], z_dynamic=z_dyn)
+            losses = full_losses(out, ref, y)
+            if w_state:
+                losses["state"] = state_loss(out["state"], state[ix, t])
+                losses["total"] = losses["total"] + w_state * losses["state"]
+            if w_smooth:
+                losses["smooth"] = temporal_smoothness(z3[B:2 * B], z_dyn, z3[2 * B:])
+                losses["total"] = losses["total"] + w_smooth * losses["smooth"]
+        if training:
+            scaler.scale(losses["total"]).backward()
+            scaler.step(opt)
+            scaler.update()
+        for k, v in losses.items():
+            sums[k] = sums.get(k, 0.0) + float(v.detach()) * len(ix)
+        count += len(ix)
+    return {k: v / count for k, v in sums.items()}
 
 
 def main():
     ap = argparse.ArgumentParser()
+    ap.add_argument("--run", required=True, help="output folder under outputs/autoencoder/")
+    ap.add_argument("--static-epochs", type=int, default=15)
+    ap.add_argument("--joint-epochs", type=int, default=20)
+    ap.add_argument("--patience", type=int, default=5)
+    ap.add_argument("--batch-size", type=int, default=32)
+    ap.add_argument("--static-batch", type=int, default=16)
+    ap.add_argument("--lr", type=float, default=8e-4)
+    ap.add_argument("--stride", type=int, default=2, help="training frame stride (validation uses 1)")
+    ap.add_argument("--detail-size", type=int, default=cfg.DETAIL_SIZE)
+    ap.add_argument("--state-weight", type=float, default=0.0, help="training-only TCP/gripper head; 0 disables")
+    ap.add_argument("--smooth-weight", type=float, default=0.0, help="latent acceleration penalty; 0 disables")
+    ap.add_argument("--resume", action="store_true")
+    ap.add_argument("--smoke", action="store_true", help="2 pairs per split, 1 epoch each")
+    a = ap.parse_args()
+    assert min(a.static_epochs, a.joint_epochs, a.batch_size, a.static_batch, a.patience, a.stride) > 0
+    if not torch.cuda.is_available():
+        raise RuntimeError("CUDA required")
 
-    ap.add_argument(
-        "--static-epochs",
-        type=int,
-        default=15,
-    )
+    out = cfg.OUT / "autoencoder" / a.run
+    out.mkdir(parents=True, exist_ok=True)
+    latest, best = out / "latest.pt", out / "autoencoder.pt"
+    if not a.resume and (latest.exists() or best.exists()):
+        raise RuntimeError(f"{out} already has checkpoints: use --resume or a new --run")
 
-    ap.add_argument(
-        "--joint-epochs",
-        type=int,
-        default=60,
-    )
+    seed_everything(cfg.SEED)
+    data.check_reference_is_settled()
+    keys = data.split_keys()
+    if a.smoke:
+        keys = {k: v[:4] for k, v in keys.items()}
+        a.static_epochs = a.joint_epochs = 1
+        a.stride = 50
+    torch.backends.cudnn.benchmark = True
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
+    rgb_train = data.to_gpu_cache(data.load_rgb(keys["train"]))
+    rgb_val = data.to_gpu_cache(data.load_rgb(keys["validation"]))
+    train_frames = data.frame_indices(a.stride)
+    val_frames = data.frame_indices(1 if not a.smoke else 50)
+    if a.smooth_weight:  # need t-1 and t+1 inside the sequence
+        train_frames = train_frames[(train_frames > cfg.REFERENCE_FRAME) & (train_frames < cfg.NUM_FRAMES - 1)]
+        val_frames = val_frames[(val_frames > cfg.REFERENCE_FRAME) & (val_frames < cfg.NUM_FRAMES - 1)]
+    state_dim = 4 if a.state_weight else 0
+    state_train = state_val = None
+    state_stats = None
+    if state_dim:
+        s_tr, s_va = data.load_robot_state(keys["train"]), data.load_robot_state(keys["validation"])
+        mu, sd = s_tr.reshape(-1, 4).mean(0), s_tr.reshape(-1, 4).std(0) + 1e-6
+        state_stats = dict(mean=mu.tolist(), std=sd.tolist(), fields=["tcp_x", "tcp_y", "tcp_z", "gripper_width"])
+        state_train = torch.as_tensor((s_tr - mu) / sd, device="cuda")
+        state_val = torch.as_tensor((s_va - mu) / sd, device="cuda")
+    aux = dict(w_state=a.state_weight, w_smooth=a.smooth_weight)
 
-    ap.add_argument(
-        "--batch-size",
-        type=int,
-        default=128,
-        help=(
-            "Native 256 uses substantially more VRAM. "
-            "Lower to 64 or 32 if needed."
-        ),
-    )
+    settings = dict(args=vars(a), dataset=str(cfg.RGB), split=cfg.SPLIT, reference_frame=cfg.REFERENCE_FRAME,
+                    static_latent_dim=cfg.STATIC_LATENT_DIM, dynamic_latent_dim=cfg.DYNAMIC_LATENT_DIM)
+    signature = {k: v for k, v in settings.items() if k != "args"} | {
+        k: getattr(a, k) for k in ("static_epochs", "batch_size", "static_batch", "lr", "stride", "detail_size",
+                                   "state_weight", "smooth_weight")}
+    write_json(out / "settings.json", settings)
 
-    ap.add_argument(
-        "--lr",
-        type=float,
-        default=8e-4,
-    )
+    model = V6DualEncoder(cfg.STATIC_LATENT_DIM, cfg.DYNAMIC_LATENT_DIM, a.detail_size, state_dim).cuda().to(memory_format=torch.channels_last)
+    n_params = sum(p.numel() for p in model.parameters())
+    print("Parameters:", n_params, "| pairs", {k: len(v) // 2 for k, v in keys.items()}, flush=True)
 
-    args = ap.parse_args()
-
-    seed_everything(TRAIN_SEED)
-
-    OUT_DIR.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
-
-    splits = build_final_splits(
-        DATA_PATH
-    )
-
-    train_static_ds = H5StaticDataset256(
-        DATA_PATH,
-        collect_static_index(
-            DATA_PATH,
-            splits["train"],
-        ),
-    )
-
-    train_dynamic_ds = H5DynamicDataset256(
-        DATA_PATH,
-        collect_dynamic_index(
-            DATA_PATH,
-            splits["train"],
-        ),
-    )
-
-    test_dynamic_ds = H5DynamicDataset256(
-        DATA_PATH,
-        collect_dynamic_index(
-            DATA_PATH,
-            splits["test"],
-        ),
-    )
-
-    static_loader = DataLoader(
-        train_static_ds,
-        batch_size=min(
-            args.batch_size,
-            128,
-        ),
-        shuffle=True,
-        num_workers=2,
-        pin_memory=True,
-        persistent_workers=False,
-    )
-
-    dynamic_loader = DataLoader(
-        train_dynamic_ds,
-        batch_size=args.batch_size,
-        shuffle=True,
-        num_workers=2,
-        pin_memory=True,
-        persistent_workers=False,
-        prefetch_factor=1,
-    )
-
-    test_loader = DataLoader(
-        test_dynamic_ds,
-        batch_size=args.batch_size,
-        shuffle=False,
-        num_workers=2,
-        pin_memory=True,
-        persistent_workers=False,
-        prefetch_factor=1,
-    )
-
-    device = torch.device(
-        "cuda"
-        if torch.cuda.is_available()
-        else "cpu"
-    )
-
-    if device.type != "cuda":
-        raise RuntimeError(
-            "CUDA was not detected."
-        )
-
-    print()
-    print("=" * 104)
-    print("V6 NATIVE256 EXTENDED - NO FUTURE ANCHOR")
-    print("=" * 104)
-    print("Input/output resolution : 256x256 NATIVE")
-    print("Downscale before encoder: NONE")
-    print("z_static                : 128")
-    print("z_dynamic               : 128")
-    print("Train pairs             :", len(splits["train"]))
-    print("Test pairs              :", len(splits["test"]))
-    print("Static epochs           :", args.static_epochs)
-    print("Dynamic epochs          :", args.joint_epochs)
-    print("Batch size              :", args.batch_size)
-    print("Device                  :", device)
-    print("=" * 104)
-
-    model = (
-        PainStaticDynamicAutoencoderV6Native256Latent128(
-            static_latent_dim=
-                STATIC_LATENT_DIM,
-            dynamic_latent_dim=
-                DYNAMIC_LATENT_DIM,
-        )
-        .to(device)
-    )
-
-    optimizer = torch.optim.AdamW(
-        model.parameters(),
-        lr=args.lr,
-        weight_decay=1e-5,
-    )
-
-    scaler = torch.amp.GradScaler(
-        "cuda",
-        enabled=True,
-    )
-
-    # --------------------------------------------------------
-    # Stage 1: static pretraining
-    # --------------------------------------------------------
-    for epoch in range(
-        1,
-        args.static_epochs + 1,
-    ):
-        model.train()
-        total = 0.0
-        count = 0
-
-        for frame0 in static_loader:
-            frame0 = frame0.to(
-                device,
-                non_blocking=True,
-            )
-
-            optimizer.zero_grad(
-                set_to_none=True
-            )
-
-            with torch.autocast(
-                device_type="cuda",
-                dtype=torch.float16,
-                enabled=True,
-            ):
-                z = model.encode_static(
-                    frame0
-                )
-                pred = (
-                    model.decode_static_aux(z)
-                )
-                loss = F.mse_loss(
-                    pred,
-                    frame0,
-                )
-
-            scaler.scale(
-                loss
-            ).backward()
-
-            scaler.step(
-                optimizer
-            )
-            scaler.update()
-
-            n = int(
-                frame0.shape[0]
-            )
-
-            total += (
-                float(loss.item())
-                * n
-            )
-            count += n
-
-        print(
-            f"STATIC {epoch:03d}"
-            f" | train="
-            f"{total/max(count,1):.7f}"
-        )
-
-    # Freeze static representation exactly as baseline protocol.
-    for p in model.static_encoder.parameters():
-        p.requires_grad = False
-
-    for p in model.static_aux_decoder.parameters():
-        p.requires_grad = False
-
-    optimizer = torch.optim.AdamW(
-        [
-            p
-            for p in model.parameters()
-            if p.requires_grad
-        ],
-        lr=args.lr,
-        weight_decay=1e-5,
-    )
-
-    latent_cache, mse_cache = build_static_cache(
-        model,
-        DATA_PATH,
-        splits["train"],
-        device,
-    )
-
+    scaler = torch.amp.GradScaler("cuda")
+    rng = np.random.default_rng(cfg.SEED)
+    static_done = joint_done = stale = 0
+    best_loss = float("inf")
     history = []
+    resume = None
+    if a.resume:
+        resume = torch.load(latest, map_location="cpu", weights_only=False)
+        assert resume["signature"] == signature, "resume configuration mismatch"
+        model.load_state_dict(resume["model_state_dict"])
+        static_done, joint_done = resume["static_done"], resume["joint_done"]
+        best_loss, stale, history = resume["best_loss"], resume["stale"], resume["history"]
+        rng.bit_generator.state = resume["rng"]
+        scaler.load_state_dict(resume["scaler"])
+        torch.set_rng_state(resume["torch_rng"])
+        torch.cuda.set_rng_state_all(resume["cuda_rng"])
 
-    # --------------------------------------------------------
-    # Stage 2: dynamic training
-    # --------------------------------------------------------
-    for epoch in range(
-        1,
-        args.joint_epochs + 1,
-    ):
+    def save_latest(opt, stage):
+        atomic_save(dict(model_state_dict=model.state_dict(), optimizer=opt.state_dict(), scaler=scaler.state_dict(),
+                         stage=stage, static_done=static_done, joint_done=joint_done, best_loss=best_loss,
+                         stale=stale, history=history, rng=rng.bit_generator.state,
+                         torch_rng=torch.get_rng_state(), cuda_rng=torch.cuda.get_rng_state_all(),
+                         signature=signature), latest)
+
+    # ---------------- stage 1: static branch on reference images
+    static_params = list(model.static_encoder.parameters()) + list(model.static_aux_decoder.parameters())
+    opt = torch.optim.AdamW(static_params, lr=a.lr, weight_decay=1e-5)
+    if resume and resume["stage"] == "static":
+        opt.load_state_dict(resume["optimizer"])
+    for epoch in range(static_done + 1, a.static_epochs + 1):
         model.train()
-        model.static_encoder.eval()
-        model.static_aux_decoder.eval()
-
-        total = 0.0
-        count = 0
-
-        for batch in dynamic_loader:
-            frame0 = rgb_to_device(
-                batch["frame0"], device
-            )
-
-            frame_t = rgb_to_device(
-                batch["frame_t"], device
-            )
-
-            cached_z = torch.stack([
-                latent_cache[key]
-                for key in batch["key"]
-            ])
-
-            cached_mse = torch.stack([
-                mse_cache[key]
-                for key in batch["key"]
-            ])
-
-            optimizer.zero_grad(
-                set_to_none=True
-            )
-
-            with torch.autocast(
-                device_type="cuda",
-                dtype=torch.float16,
-                enabled=True,
-            ):
-                outputs = model(
-                    frame0,
-                    frame_t,
-                    cached_z_static=cached_z,
-                    cached_static_mse=cached_mse,
-                )
-
-                losses = full_losses(
-                    outputs,
-                    frame0,
-                    frame_t,
-                )
-
-            scaler.scale(
-                losses["total"]
-            ).backward()
-
-            scaler.step(
-                optimizer
-            )
+        order = rng.permutation(len(rgb_train))
+        total, start = 0.0, time.perf_counter()
+        for i in range(0, len(order), a.static_batch):
+            ix = torch.as_tensor(order[i:i + a.static_batch], device="cuda")
+            x = data.to_tensor(rgb_train[ix, cfg.REFERENCE_FRAME], "cuda")
+            opt.zero_grad(set_to_none=True)
+            with amp():
+                loss = F.mse_loss(model.decode_static_aux(model.encode_static(x)), x)
+            scaler.scale(loss).backward()
+            scaler.step(opt)
             scaler.update()
+            total += float(loss.detach()) * len(ix)
+        static_done = epoch
+        save_latest(opt, "static")
+        print(f"STATIC {epoch:03d} loss={total / len(rgb_train):.6f} sec={time.perf_counter() - start:.1f}", flush=True)
 
-            n = int(
-                frame0.shape[0]
-            )
+    # ---------------- stage 2: dynamic branch, static frozen
+    for m in (model.static_encoder, model.static_aux_decoder):
+        m.requires_grad_(False)
+        m.eval()
+    cache_train, cache_val = cache_static(model, rgb_train), cache_static(model, rgb_val)
+    opt = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad], lr=a.lr, weight_decay=1e-5)
+    if resume and resume["stage"] == "joint":
+        opt.load_state_dict(resume["optimizer"])
+    for epoch in range(joint_done + 1, a.joint_epochs + 1):
+        if stale >= a.patience:
+            break
+        start = time.perf_counter()
+        tm = run_epoch(model, rgb_train, train_frames, cache_train, a.batch_size, opt, scaler, rng, state_train, **aux)
+        vm = run_epoch(model, rgb_val, val_frames, cache_val, a.batch_size, state=state_val, **aux)
+        if not np.isfinite(vm["total"]):
+            raise RuntimeError("non-finite validation loss")
+        joint_done = epoch
+        history.append(dict(epoch=epoch, train=tm, validation=vm, seconds=time.perf_counter() - start))
+        if vm["total"] < best_loss - 1e-5 or not best.exists():
+            best_loss, stale = vm["total"], 0
+            atomic_save(dict(model_state_dict=model.state_dict(), architecture="v6_dual_encoder",
+                             static_latent_dim=cfg.STATIC_LATENT_DIM, dynamic_latent_dim=cfg.DYNAMIC_LATENT_DIM,
+                             detail_size=a.detail_size, state_dim=state_dim, state_stats=state_stats,
+                             reference_frame=cfg.REFERENCE_FRAME, epoch=epoch,
+                             split=cfg.SPLIT), best)
+        else:
+            stale += 1
+        save_latest(opt, "joint")
+        write_json(out / "history.json", history)
+        print(f"JOINT {epoch:03d} train={tm['total']:.6f} val={vm['total']:.6f} "
+              f"sec={history[-1]['seconds']:.1f} patience={stale}/{a.patience}", flush=True)
 
-            total += (
-                float(
-                    losses[
-                        "total"
-                    ].item()
-                )
-                * n
-            )
+    ckpt = torch.load(best, map_location="cpu", weights_only=False)
+    model.load_state_dict(ckpt["model_state_dict"])
+    metrics = run_epoch(model, rgb_val, val_frames, cache_static(model, rgb_val), a.batch_size, state=state_val, **aux)
+    write_json(out / "training_summary.json", dict(best_epoch=ckpt["epoch"], validation_metrics=metrics,
+                                                   parameters=n_params, history=history))
+    print("VALIDATION", metrics, flush=True)
+    print("DONE", out, flush=True)
 
-            count += n
-
-        train_total = (
-            total
-            / max(
-                count,
-                1,
-            )
-        )
-
-        history.append(
-            {
-                "epoch": epoch,
-                "train_total":
-                    float(
-                        train_total
-                    ),
-            }
-        )
-
-        print(
-            f"JOINT {epoch:03d}"
-            f" | train="
-            f"{train_total:.6f}"
-        )
-
-    # --------------------------------------------------------
-    # Final test
-    # --------------------------------------------------------
-    test = evaluate(
-        model,
-        test_loader,
-        device,
-    )
-
-    torch.save(
-        {
-            "model_state_dict":
-                model.state_dict(),
-            "architecture":
-                "autoencoder_v6_noanchor_native256_latent128_extended",
-            "image_size": 256,
-            "native_resolution": True,
-            "static_latent_dim":
-                STATIC_LATENT_DIM,
-            "dynamic_latent_dim":
-                DYNAMIC_LATENT_DIM,
-            "split_seed":
-                SPLIT_SEED,
-            "final_train_pairs":
-                sorted(
-                    splits[
-                        "train"
-                    ]
-                ),
-            "test_pairs":
-                sorted(
-                    splits[
-                        "test"
-                    ]
-                ),
-            "static_epochs":
-                int(
-                    args.static_epochs
-                ),
-            "joint_epochs":
-                int(
-                    args.joint_epochs
-                ),
-        },
-        MODEL_PATH,
-    )
-
-    SUMMARY_PATH.write_text(
-        json.dumps(
-            {
-                "architecture":
-                    "autoencoder_v6_noanchor_native256_latent128_extended",
-                "image_size": 256,
-                "native_resolution": True,
-                "z_static": 128,
-                "z_dynamic": 128,
-                "train_pairs": len(splits["train"]),
-                "test_pairs": len(splits["test"]),
-                "test_metrics": {
-                    k: float(v)
-                    for k, v
-                    in test.items()
-                },
-                "history": history,
-            },
-            indent=2,
-        ),
-        encoding="utf-8",
-    )
-
-    print()
-    print("=" * 104)
-    print("NATIVE256 EXTENDED COMPLETE")
-    print("=" * 104)
-    print("Test total     :", test["total"])
-    print("Test dynamic   :", test["dynamic"])
-    print("Test frame     :", test["frame"])
-    print("Test background:", test["background"])
-    print("Model          :", MODEL_PATH.resolve())
-    print("=" * 104)
-
-
-from CLEAVER_OPTIMIZED.config import RGB, AE_DIR, AE_MODEL
-DATA_PATH = RGB
-OUT_DIR = cfg.AE_DIR
-MODEL_PATH = cfg.AE_MODEL
-SUMMARY_PATH = OUT_DIR / "training_summary.json"
 
 if __name__ == "__main__":
     main()
