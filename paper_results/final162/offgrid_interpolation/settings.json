@@ -1,0 +1,28 @@
+{
+  "mode": "external",
+  "model_sha256": "8e6fd40395d1fa00b25906cb1abe08329dcf5229dbbc1343f8aa12f6f2439a3c",
+  "latent_sha256": "c8d2408b78639a49150d6bd8160e65751328590168ae26e8715a669a627e5b46",
+  "external_latent_sha256": "b8cb0e3f54d3dff6a97d876695dc1ab5faa92dd8a6960145c0e6d1f31a9a4955",
+  "script_sha256": "f485a5146f494383feb2657f69b0ab48fedd49a50f86e803ebaa476642847c5a",
+  "grid_mm": 5.0,
+  "grid_points": 625,
+  "grid_batch": 128,
+  "frames": [
+    1,
+    2,
+    3,
+    5,
+    10,
+    12,
+    23,
+    45,
+    67,
+    112,
+    157,
+    223
+  ],
+  "device": "cuda",
+  "cost_definition": "Estimated dense matrix arithmetic and nearest distance arithmetic only. Excludes encoding, feature setup, elementwise reservoir operations, loss/selection, optimizer vector algebra, memory and hardware effects. L-BFGS calls includes final no-grad forward. Shared final CESN rollout reported separately.",
+  "batch": 3,
+  "nearest_control": "retrieved_suffix_nrmse is a separate retrieval-only control, not the CESN-conditioned future metric plotted"
+}

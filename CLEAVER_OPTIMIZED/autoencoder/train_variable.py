@@ -26,7 +26,7 @@ def load_data():
         pair=np.array([int(f[k].attrs['pair_id']) for k in keys])
         labels=np.array([int(f[k].attrs['label']) for k in keys])
         obj=np.array([int(f[k].attrs['object_id']) for k in keys])
-        assert set(pair)==set(cfg.TRAIN)|set(cfg.TEST)
+        assert set(pair)==set(cfg.TRAIN)|set(cfg.SPLIT["validation"])|set(cfg.TEST)
         assert not set(cfg.TRAIN)&set(cfg.TEST)
         for p in set(pair): assert sorted(labels[pair==p].tolist())==[0,1]
         # Allocate once, retain uint8, never create a second full float32 copy.
@@ -37,14 +37,10 @@ def load_data():
     print(f'RGB cache: {rgb.nbytes/2**30:.2f} GiB | {len(keys)} trajectories',flush=True)
     return keys, pair, labels, obj, rgb
 
+# FINAL162_FIXED_SPLIT
+
 def split_pairs(pair,obj):
-    # Keep test fixed. Hold out one training pair per distinct object where possible.
-    rng=np.random.default_rng(42); train=set(map(int,cfg.TRAIN)); val=[]
-    groups={int(o):sorted({int(p) for p in pair[obj==o] if int(p) in train}) for o in np.unique(obj)}
-    for o,ps in sorted(groups.items()):
-        if len(ps)>1: val.append(int(rng.choice(ps)))
-    if not val: raise RuntimeError('Cannot create grouped validation split')
-    return sorted(train-set(val)), sorted(val), sorted(map(int,cfg.TEST))
+    return tuple(sorted(map(int,cfg.SPLIT[k])) for k in ('train','validation','test'))
 
 def device_rgb(a):
     return torch.from_numpy(np.ascontiguousarray(a)).to('cuda').permute(0,3,1,2).float().div_(255)
@@ -125,9 +121,6 @@ def main():
     latest=OUT/'latest.pt'; best=OUT/'autoencoder.pt'
     if not args.resume and (latest.exists() or best.exists()): raise RuntimeError('Existing checkpoints: use --resume or archive this output folder')
     keys,pair,labels,obj,rgb=load_data(); tr,va,te=split_pairs(pair,obj)
-    original=cfg.OUT/"autoencoder_lightweight128"
-    saved_split=json.loads((original/"split.json").read_text())
-    assert saved_split==dict(train=tr,validation=va,test=te), "Original AE split mismatch"
     ids=[np.flatnonzero(np.isin(pair,s)) for s in (tr,va,te)]; train,val,test=ids
     split=dict(train=tr,validation=va,test=te); write_json(OUT/'split.json',split); print('Pairs:',{k:len(v) for k,v in split.items()},flush=True)
     # Identity check prevents resume against changed data or split.
@@ -135,11 +128,7 @@ def main():
     model=LightweightAutoencoderVariable(args.dynamic_dim).cuda(); print('Parameters:',sum(p.numel() for p in model.parameters()),flush=True)
     scaler=torch.amp.GradScaler('cuda'); rng=np.random.default_rng(42); static_done=0; joint_done=0; best_loss=float('inf'); stale=0; history=[]
     resume=None
-    source=torch.load(original/"autoencoder.pt",map_location="cpu",weights_only=False)["model_state_dict"]
-    model.static_encoder.load_state_dict({k.split(".",1)[1]:v for k,v in source.items() if k.startswith("static_encoder.")})
-    model.static_aux_decoder.load_state_dict({k.split(".",1)[1]:v for k,v in source.items() if k.startswith("static_aux_decoder.")})
-    static_done=args.static_epochs
-    signature.update(dynamic_dim=args.dynamic_dim,static_checkpoint_sha256=hashlib.sha256((original/"autoencoder.pt").read_bytes()).hexdigest())
+    signature.update(dynamic_dim=args.dynamic_dim,static_training='from_scratch')
     if args.resume:
         resume=torch.load(latest,map_location='cpu',weights_only=False); assert resume['signature']==signature,'Resume configuration mismatch'
         model.load_state_dict(resume['model_state_dict']); static_done=resume['static_done']; joint_done=resume['joint_done']; best_loss=resume['best_loss']; stale=resume['stale']; history=resume['history']; rng.bit_generator.state=resume['rng']; scaler.load_state_dict(resume['scaler']); torch.set_rng_state(resume['torch_rng']); torch.cuda.set_rng_state_all(resume['cuda_rng'])

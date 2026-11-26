@@ -1,0 +1,17 @@
+{
+  "model_name": "CESN-Vision",
+  "source_configuration": "C161",
+  "dataset": "datasets/cleaver_extended_workspace_162_complete/cleaver_same_goal_162.h5",
+  "static_latent_dim": 128,
+  "dynamic_latent_dim": 128,
+  "reservoir_size": 1500,
+  "spectral_radius": 0.6,
+  "leak_rate": 0.015,
+  "ridge": 10.0,
+  "feedback_gain": 1.0,
+  "seed": 42,
+  "prediction_mode": "absolute",
+  "autoencoder_directory": "outputs/final162/autoencoder_lightweight128_matched",
+  "checkpoint": "outputs/final162/CESN_Vision/cesn.pt",
+  "split_file": "split.json"
+}

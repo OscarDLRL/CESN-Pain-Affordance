@@ -6,16 +6,16 @@ BASE = ROOT / "CLEAVER_OPTIMIZED"
 
 RGB = (
     ROOT / "datasets"
-    / "cleaver_extended_workspace_162"
+    / "cleaver_extended_workspace_162_complete"
     / "cleaver_same_goal_162.h5"
 )
 
-OUT = BASE / "outputs"
+OUT = BASE / "outputs" / "final162"
 
-AE_DIR = OUT / "autoencoder_latent128"
+AE_DIR = OUT / "autoencoder_lightweight128_matched"
 AE_MODEL = AE_DIR / "autoencoder.pt"
 
-LATENT = OUT / "latents" / "cleaver_latent128.h5"
+LATENT = AE_DIR / "cleaver_lightweight_latent128.h5"
 
 SPLIT = json.loads(
     (BASE / "split.json").read_text()
@@ -23,6 +23,7 @@ SPLIT = json.loads(
 
 TRAIN = set(SPLIT["train"])
 TEST = set(SPLIT["test"])
+VALIDATION = set(SPLIT["validation"])
 
 IMAGE_SIZE = 256
 
@@ -34,8 +35,8 @@ STATIC_PCA_DIM = 16
 USE_EXPLICIT_TIME = False
 
 RESERVOIR_SIZE = 1500
-SPECTRAL_RADIUS = 0.95
-LEAK_RATE = 0.25
-RIDGE = 0.5
+SPECTRAL_RADIUS = 0.6
+LEAK_RATE = 0.015
+RIDGE = 10.0
 
 SEED = 42

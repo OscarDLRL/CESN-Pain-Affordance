@@ -104,3 +104,17 @@ __pycache__/
 /CLEAVER_OPTIMIZED/outputs/
 /CLEAVER_OPTIMIZED/logs/
 
+
+# Python generated files
+__pycache__/
+*.pyc
+
+# Generated model checkpoints
+*.pt
+*.pth
+*.ckpt
+
+# Generated figures and experiment artifacts
+/CLEAVER_OPTIMIZED/outputs/**/*.pdf
+/CLEAVER_OPTIMIZED/outputs/**/*_smoke/
+
